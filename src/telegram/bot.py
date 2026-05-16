@@ -1,8 +1,7 @@
 import os
 import asyncio
-from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,9 +17,22 @@ from src.utils.unsubscribe import extract_unsubscribe, do_http_unsubscribe
 
 logger = setup_logger("telegram_bot")
 
-# State stored in bot_data for simplicity (single-user bot)
 PENDING_REPLY_KEY = "pending_reply"
 LAST_EMAILS_KEY = "last_emails"
+
+_ACC_ICON = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}
+_CAT_LABEL = {
+    "urgent": "⚡ Urgent", "important": "⭐ Important", "work": "💼 Travail",
+    "personal": "👤 Personnel", "finance": "💰 Finance", "newsletter": "📰 Newsletter",
+    "spam": "🗑️ Spam", "social": "🌐 Social", "information": "ℹ️ Info", "other": "📁 Autre",
+}
+
+BTN_SORT = "📊 Trier"
+BTN_EMAILS = "📬 Emails"
+BTN_SUMMARY = "📋 Résumé"
+BTN_SEARCH = "🔍 Rechercher"
+BTN_NEWSLETTERS = "🔕 Newsletters"
+BTN_HELP = "❓ Aide"
 
 
 def _allowed(update: Update) -> bool:
@@ -30,8 +42,46 @@ def _allowed(update: Update) -> bool:
     return str(update.effective_user.id) == str(allowed_id)
 
 
-def _unauthorized_msg() -> str:
-    return "⛔ Accès non autorisé."
+def _main_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_SORT, BTN_EMAILS, BTN_SUMMARY],
+            [BTN_SEARCH, BTN_NEWSLETTERS, BTN_HELP],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def _sep() -> str:
+    return "━━━━━━━━━━━━━━━━━━━━"
+
+
+def _imp_bar(imp) -> str:
+    try:
+        n = int(imp)
+        return "●" * n + "○" * (5 - n) if 1 <= n <= 5 else ""
+    except (ValueError, TypeError):
+        return ""
+
+
+def _email_card(i: int, e: dict, show_snippet: bool = True) -> str:
+    acc = e.get("account", "")
+    icon = _ACC_ICON.get(acc, "✉️")
+    subj = e.get("subject", "(sans sujet)")[:55]
+    sender = e.get("from", "")[:40]
+    date = e.get("date", "")[:16]
+    snippet = e.get("snippet", "")[:70]
+    cat = _CAT_LABEL.get(e.get("category", ""), "")
+    imp_bar = _imp_bar(e.get("importance", ""))
+
+    lines = [f"{icon} `[{i}]` *{subj}*"]
+    lines.append(f"    👤 {sender}   🕐 {date}")
+    if cat or imp_bar:
+        lines.append(f"    {cat}  {imp_bar}")
+    if show_snippet and snippet:
+        lines.append(f"    _{snippet}_")
+    return "\n".join(lines)
 
 
 class MailBot:
@@ -58,43 +108,45 @@ class MailBot:
 
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         await update.message.reply_text(
-            "👋 Bonjour ! Je suis votre assistant email IA.\n\n"
-            "Voici ce que je peux faire :\n"
-            "• /trier — Trier et analyser tous vos emails\n"
-            "• /resume — Résumé quotidien de vos emails\n"
-            "• /emails — Voir les derniers emails importants\n"
-            "• /recherche <terme> — Rechercher des emails\n"
-            "• /repondre <id> — Rédiger une réponse\n"
-            "• /aide — Afficher l'aide\n\n"
-            "Vous pouvez aussi m'écrire librement pour me donner des instructions !"
+            "👋 *Bonjour ! Je suis votre assistant email IA.*\n"
+            f"{_sep()}\n\n"
+            "📬 Je gère *3 comptes* : Gmail + 2×Outlook\n\n"
+            "Utilisez les boutons du menu ou écrivez-moi librement !",
+            parse_mode="Markdown",
+            reply_markup=_main_kb(),
         )
 
     async def cmd_help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         await update.message.reply_text(
-            "📖 *Commandes disponibles*\n\n"
-            "/trier — Analyse et classe tous vos emails (Gmail + 2×Outlook)\n"
-            "/resume — Génère le résumé quotidien\n"
-            "/emails [n] — Liste les n derniers emails (défaut: 10)\n"
-            "/recherche <terme> — 🔍 Recherche dans vos emails\n"
-            "/voir <n> — Lire un email complet\n"
-            "/repondre <n> — Rédige une réponse avec IA\n"
-            "/desabonner <n> — Se désabonner d'une newsletter\n"
-            "/aide — Cette aide\n\n"
-            "💬 Écrivez librement pour poser des questions ou donner des instructions.",
+            "❓ *Aide — Commandes disponibles*\n"
+            f"{_sep()}\n\n"
+            "📊 *Trier* — Analyse et classe tous vos emails\n"
+            "📬 *Emails* — Liste les derniers emails\n"
+            "📋 *Résumé* — Résumé quotidien IA\n"
+            "🔍 *Rechercher* — Chercher dans vos emails\n"
+            "🔕 *Newsletters* — Gérer les newsletters\n\n"
+            f"{_sep()}\n\n"
+            "*Commandes texte :*\n"
+            "`/voir <n>` — Lire un email complet\n"
+            "`/repondre <n>` — Rédiger une réponse IA\n"
+            "`/desabonner <n>` — Se désabonner\n"
+            "`/recherche <terme>` — Recherche avancée\n\n"
+            "💬 Écrivez librement pour poser des questions !",
             parse_mode="Markdown",
+            reply_markup=_main_kb(),
         )
 
     async def cmd_sort(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
-        msg = await update.message.reply_text("⏳ Analyse et tri de vos emails en cours... (peut prendre 1-2 min)")
+        msg = await update.message.reply_text("⏳ Analyse et tri en cours… (1-2 min)")
 
         try:
             results = await asyncio.get_event_loop().run_in_executor(
@@ -102,7 +154,6 @@ class MailBot:
             )
             ctx.bot_data[LAST_EMAILS_KEY] = results
 
-            # Build summary stats
             cats: dict[str, int] = {}
             events_count = 0
             for e in results:
@@ -110,16 +161,20 @@ class MailBot:
                 cats[cat] = cats.get(cat, 0) + 1
                 events_count += len(e.get("events", []))
 
-            lines = [f"✅ *{len(results)} emails analysés et triés*\n"]
+            lines = [
+                f"✅ *{len(results)} emails analysés et triés*",
+                _sep(),
+                "",
+            ]
             for cat, count in sorted(cats.items(), key=lambda x: -x[1]):
-                label = {
-                    "urgent": "⚡ Urgent", "important": "⭐ Important", "work": "💼 Travail",
-                    "personal": "👤 Personnel", "finance": "💰 Finance", "newsletter": "📰 Newsletter",
-                    "spam": "🗑️ Spam", "social": "🌐 Social", "information": "ℹ️ Info", "other": "📁 Autre",
-                }.get(cat, cat)
-                lines.append(f"  {label}: {count}")
+                label = _CAT_LABEL.get(cat, f"📁 {cat}")
+                bar = "█" * count
+                lines.append(f"{label} — *{count}*")
             if events_count:
-                lines.append(f"\n📅 {events_count} événement(s) ajouté(s) au calendrier")
+                lines.append("")
+                lines.append(f"📅 *{events_count}* événement(s) ajouté(s) au calendrier")
+            lines.append("")
+            lines.append("💡 Appuyez sur *Emails* pour voir la liste.")
 
             await msg.edit_text("\n".join(lines), parse_mode="Markdown")
         except Exception as e:
@@ -128,46 +183,50 @@ class MailBot:
 
     async def cmd_summary(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
-        msg = await update.message.reply_text("⏳ Génération du résumé en cours...")
+        msg = await update.message.reply_text("⏳ Génération du résumé en cours…")
         try:
             summary = await asyncio.get_event_loop().run_in_executor(
                 None, self.manager.generate_daily_summary
             )
-            # Split if too long for Telegram (4096 chars limit)
             if len(summary) <= 4096:
-                await msg.edit_text(summary)
+                await msg.edit_text(summary, reply_markup=_main_kb())
             else:
                 await msg.delete()
-                for chunk in [summary[i:i+4000] for i in range(0, len(summary), 4000)]:
-                    await update.message.reply_text(chunk)
+                chunks = [summary[i:i+4000] for i in range(0, len(summary), 4000)]
+                for j, chunk in enumerate(chunks):
+                    kb = _main_kb() if j == len(chunks) - 1 else None
+                    await update.message.reply_text(chunk, reply_markup=kb)
         except Exception as e:
             logger.error(f"cmd_summary error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
 
     async def cmd_list_emails(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         args = ctx.args
         n = int(args[0]) if args and args[0].isdigit() else 10
 
-        msg = await update.message.reply_text("⏳ Récupération des emails...")
+        msg = await update.message.reply_text("⏳ Récupération des emails…")
         try:
             emails = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.fetch_all_emails(max_per_account=n)
             )
             ctx.bot_data[LAST_EMAILS_KEY] = emails
 
-            # Filter to show only importance >= 3 unless very few results
-            lines = [f"📬 *{len(emails)} emails récupérés*\n"]
+            lines = [
+                f"📬 *{len(emails)} emails récupérés*",
+                _sep(),
+                "",
+            ]
             for i, e in enumerate(emails[:n]):
-                acc_icon = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}.get(e.get("account"), "✉️")
-                lines.append(
-                    f"{acc_icon} `[{i}]` *{e.get('subject', '(pas de sujet)')[:50]}*\n"
-                    f"    De : {e.get('from', '')[:40]}\n"
-                )
+                lines.append(_email_card(i, e, show_snippet=False))
+                lines.append("")
+
+            lines.append(_sep())
+            lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre")
 
             text = "\n".join(lines)
             if len(text) > 4000:
@@ -179,42 +238,50 @@ class MailBot:
 
     async def cmd_search(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         if not ctx.args:
             await update.message.reply_text(
-                "Usage : /recherche <terme>\n"
+                "🔍 *Recherche d'emails*\n"
+                f"{_sep()}\n\n"
+                "Usage : `/recherche <terme>`\n\n"
                 "Exemples :\n"
-                "  /recherche facture\n"
-                "  /recherche newsletter\n"
-                "  /recherche jean@example.com"
+                "  `/recherche facture`\n"
+                "  `/recherche newsletter`\n"
+                "  `/recherche jean@example.com`",
+                parse_mode="Markdown",
+                reply_markup=_main_kb(),
             )
             return
         query = " ".join(ctx.args)
-        msg = await update.message.reply_text(f"🔍 Recherche de « {query} »...")
+        await self._do_search(update, ctx, query)
+
+    async def _do_search(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, query: str):
+        msg = await update.message.reply_text(f"🔍 Recherche de « {query} »…")
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.search_emails(query)
             )
             if not results:
-                await msg.edit_text(f"🔍 Aucun email trouvé pour « {query} ».")
+                await msg.edit_text(
+                    f"🔍 Aucun résultat pour *« {query} »*\n\nEssayez un autre terme.",
+                    parse_mode="Markdown",
+                )
                 return
 
             ctx.bot_data[LAST_EMAILS_KEY] = results
-            acc_icon = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}
-            lines = [f"🔍 *{len(results)} résultat(s) pour « {query} »*\n"]
+            lines = [
+                f"🔍 *{len(results)} résultat(s) pour « {query} »*",
+                _sep(),
+                "",
+            ]
             for i, e in enumerate(results[:15]):
-                icon = acc_icon.get(e.get("account", ""), "✉️")
-                subj = e.get("subject", "(sans sujet)")[:50]
-                sender = e.get("from", "")[:35]
-                snippet = e.get("snippet", "")[:60]
-                lines.append(
-                    f"{icon} `[{i}]` *{subj}*\n"
-                    f"    👤 {sender}\n"
-                    f"    _{snippet}_\n"
-                )
+                lines.append(_email_card(i, e, show_snippet=True))
+                lines.append("")
 
-            lines.append("💡 `/voir <n>` pour lire un email • `/repondre <n>` pour répondre")
+            lines.append(_sep())
+            lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre • `/desabonner <n>` pour se désabonner")
+
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:4000] + "\n…"
@@ -225,39 +292,47 @@ class MailBot:
 
     async def cmd_view_email(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
         if not ctx.args or not ctx.args[0].isdigit():
-            await update.message.reply_text("Usage : /voir <index>\nUtilisez /emails ou /recherche d'abord.")
+            await update.message.reply_text(
+                "Usage : `/voir <index>`\nUtilisez *Emails* ou *Rechercher* d'abord.",
+                parse_mode="Markdown",
+                reply_markup=_main_kb(),
+            )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"Index invalide. Max : {len(emails)-1}")
+            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
             return
 
         e = emails[idx]
-        acc_icon = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}.get(e.get("account", ""), "✉️")
+        acc_icon = _ACC_ICON.get(e.get("account", ""), "✉️")
         body = e.get("body", e.get("snippet", "(pas de contenu)"))
         body_preview = body[:800] + ("…" if len(body) > 800 else "")
 
+        cat = _CAT_LABEL.get(e.get("category", ""), "")
+        imp_bar = _imp_bar(e.get("importance", ""))
+
         text = (
-            f"{acc_icon} *Email [{idx}]*\n"
+            f"{acc_icon} *Email `[{idx}]`*\n"
+            f"{_sep()}\n"
             f"*De :* {e.get('from','')}\n"
             f"*À :* {e.get('to','')}\n"
-            f"*Date :* {e.get('date','')}\n"
+            f"*Date :* {e.get('date','')[:25]}\n"
             f"*Sujet :* {e.get('subject','')}\n"
         )
-        if e.get("category"):
-            text += f"*Catégorie :* {e.get('category')} | *Importance :* {e.get('importance','?')}/5\n"
-        text += f"\n{body_preview}"
+        if cat or imp_bar:
+            text += f"*Catégorie :* {cat}  {imp_bar}\n"
+        text += f"{_sep()}\n\n{body_preview}"
 
-        from src.utils.unsubscribe import extract_unsubscribe
         unsub_info = extract_unsubscribe(e)
         buttons = [InlineKeyboardButton("✏️ Répondre", callback_data=f"reply_{idx}")]
         if unsub_info["url"] or unsub_info["mailto"]:
             buttons.append(InlineKeyboardButton("🔕 Se désabonner", callback_data=f"unsub_{idx}"))
         keyboard = [buttons]
+
         if len(text) > 4000:
             text = text[:4000] + "\n…"
         await update.message.reply_text(
@@ -268,37 +343,42 @@ class MailBot:
 
     async def cmd_reply(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
         if not ctx.args or not ctx.args[0].isdigit():
-            await update.message.reply_text("Usage : /repondre <index>\nUtilisez /emails pour voir les index.")
+            await update.message.reply_text(
+                "Usage : `/repondre <index>`\nUtilisez *Emails* pour voir les index.",
+                parse_mode="Markdown",
+                reply_markup=_main_kb(),
+            )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"Index invalide. Max : {len(emails)-1}")
+            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
             return
 
         email = emails[idx]
         instructions = " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
-        msg = await update.message.reply_text("⏳ Rédaction de la réponse...")
+        msg = await update.message.reply_text("⏳ Rédaction de la réponse…")
         try:
             draft = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.draft_reply(email, instructions)
             )
             ctx.bot_data[PENDING_REPLY_KEY] = {"email": email, "draft": draft}
 
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Envoyer", callback_data="send_reply"),
-                    InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
-                    InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
-                ]
-            ]
+            keyboard = [[
+                InlineKeyboardButton("✅ Envoyer", callback_data="send_reply"),
+                InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
+                InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
+            ]]
             await msg.edit_text(
-                f"📝 *Brouillon de réponse à :* {email.get('from','')}\n"
-                f"*Sujet :* Re: {email.get('subject','')}\n\n"
-                f"---\n{draft}\n---",
+                f"📝 *Brouillon — réponse à :*\n"
+                f"👤 {email.get('from','')}\n"
+                f"📌 Re: {email.get('subject','')}\n"
+                f"{_sep()}\n\n"
+                f"{draft}\n\n"
+                f"{_sep()}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown",
             )
@@ -308,18 +388,20 @@ class MailBot:
 
     async def cmd_unsubscribe(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
         if not ctx.args or not ctx.args[0].isdigit():
             await update.message.reply_text(
-                "Usage : /desabonner <index>\n"
-                "Utilisez /recherche newsletter ou /emails pour trouver l'index."
+                "Usage : `/desabonner <index>`\n"
+                "Utilisez *Newsletters* ou *Rechercher* pour trouver l'index.",
+                parse_mode="Markdown",
+                reply_markup=_main_kb(),
             )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"Index invalide. Max : {len(emails)-1}")
+            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
             return
 
         email = emails[idx]
@@ -327,23 +409,21 @@ class MailBot:
 
         if not info["url"] and not info["mailto"]:
             await update.message.reply_text(
-                f"⚠️ Impossible de trouver un lien de désabonnement pour :\n"
-                f"*{email.get('subject', '')}*\n\n"
-                f"Tu peux ouvrir l'email avec /voir {idx} et chercher le lien manuellement.",
+                f"⚠️ *Aucun lien de désabonnement trouvé*\n\n"
+                f"Email : *{email.get('subject', '')}*\n\n"
+                f"Utilisez `/voir {idx}` pour chercher le lien manuellement.",
                 parse_mode="Markdown",
+                reply_markup=_main_kb(),
             )
             return
 
         method_label = {
             "one_click": "✅ Désabonnement en 1 clic (RFC 8058)",
-            "http": "🌐 Lien de désabonnement",
+            "http": "🌐 Lien de désabonnement web",
             "mailto": "📧 Email de désabonnement",
         }.get(info["method"], "")
 
-        sender = email.get("from", "")
-        subj = email.get("subject", "")
         target = info["url"] or info["mailto"]
-
         ctx.user_data["pending_unsub"] = {"email": email, "info": info, "idx": idx}
 
         keyboard = [[
@@ -351,9 +431,10 @@ class MailBot:
             InlineKeyboardButton("❌ Annuler", callback_data="cancel_unsub"),
         ]]
         await update.message.reply_text(
-            f"🔕 *Désabonnement*\n\n"
-            f"*De :* {sender}\n"
-            f"*Sujet :* {subj}\n\n"
+            f"🔕 *Désabonnement*\n"
+            f"{_sep()}\n"
+            f"*De :* {email.get('from', '')}\n"
+            f"*Sujet :* {email.get('subject', '')}\n\n"
             f"{method_label}\n"
             f"`{target[:80]}`\n\n"
             f"Confirmes-tu le désabonnement ?",
@@ -378,14 +459,15 @@ class MailBot:
             )
             ctx.bot_data.pop(PENDING_REPLY_KEY, None)
             if success:
-                await query.edit_message_text("✅ Réponse envoyée !")
+                await query.edit_message_text("✅ *Réponse envoyée avec succès !*", parse_mode="Markdown")
             else:
                 await query.edit_message_text("❌ Échec de l'envoi. Vérifiez les logs.")
 
         elif data == "edit_reply":
             await query.edit_message_text(
-                "✏️ Envoyez-moi votre correction ou instructions supplémentaires, "
-                "je régénérerai le brouillon."
+                "✏️ *Modification du brouillon*\n\n"
+                "Envoyez-moi vos instructions ou corrections, je régénèrerai le brouillon.",
+                parse_mode="Markdown",
             )
             ctx.user_data["mode"] = "editing_reply"
 
@@ -400,7 +482,7 @@ class MailBot:
                 return
             info = pending["info"]
             email = pending["email"]
-            await query.edit_message_text("⏳ Désabonnement en cours...")
+            await query.edit_message_text("⏳ Désabonnement en cours…")
             try:
                 if info["url"]:
                     one_click = info["method"] == "one_click"
@@ -409,7 +491,8 @@ class MailBot:
                     )
                     if success:
                         await query.edit_message_text(
-                            f"✅ *Désabonné avec succès !*\n\n"
+                            f"✅ *Désabonné avec succès !*\n"
+                            f"{_sep()}\n"
                             f"*De :* {email.get('from','')}\n"
                             f"{msg_txt}",
                             parse_mode="Markdown",
@@ -417,7 +500,7 @@ class MailBot:
                     else:
                         await query.edit_message_text(
                             f"⚠️ *Le désabonnement a échoué.*\n{msg_txt}\n\n"
-                            f"Essaie de cliquer manuellement sur le lien dans l'email `/voir {pending['idx']}`.",
+                            f"Essaie de cliquer manuellement : `/voir {pending['idx']}`",
                             parse_mode="Markdown",
                         )
                 elif info["mailto"]:
@@ -440,7 +523,7 @@ class MailBot:
                         )
                     if ok:
                         await query.edit_message_text(
-                            f"✅ *Email de désabonnement envoyé !*\n\nÀ : {addr}",
+                            f"✅ *Email de désabonnement envoyé !*\n\nÀ : `{addr}`",
                             parse_mode="Markdown",
                         )
                     else:
@@ -460,16 +543,25 @@ class MailBot:
                 return
             email = emails[idx]
             info = extract_unsubscribe(email)
+            if not info["url"] and not info["mailto"]:
+                await query.edit_message_text("⚠️ Aucun lien de désabonnement trouvé dans cet email.")
+                return
             ctx.user_data["pending_unsub"] = {"email": email, "info": info, "idx": idx}
             target = info["url"] or info["mailto"] or ""
-            method_label = {"one_click": "✅ 1 clic", "http": "🌐 Lien web", "mailto": "📧 Email"}.get(info["method"], "")
+            method_label = {
+                "one_click": "✅ 1 clic",
+                "http": "🌐 Lien web",
+                "mailto": "📧 Email",
+            }.get(info["method"], "")
             keyboard = [[
                 InlineKeyboardButton("✅ Confirmer", callback_data="confirm_unsub"),
                 InlineKeyboardButton("❌ Annuler", callback_data="cancel_unsub"),
             ]]
             await query.edit_message_text(
-                f"🔕 *Désabonnement de :* {email.get('from','')}\n"
-                f"{method_label} — `{target[:80]}`\n\nConfirmer ?",
+                f"🔕 *Désabonnement de :*\n"
+                f"👤 {email.get('from','')}\n"
+                f"{method_label} — `{target[:80]}`\n\n"
+                f"Confirmer ?",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown",
             )
@@ -481,7 +573,7 @@ class MailBot:
                 await query.edit_message_text("❌ Email introuvable.")
                 return
             email = emails[idx]
-            await query.edit_message_text("⏳ Rédaction de la réponse...")
+            await query.edit_message_text("⏳ Rédaction de la réponse…")
             try:
                 draft = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.draft_reply(email, "")
@@ -493,31 +585,36 @@ class MailBot:
                     InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
                 ]]
                 await query.edit_message_text(
-                    f"📝 *Brouillon à :* {email.get('from','')}\n"
-                    f"*Sujet :* Re: {email.get('subject','')}\n\n---\n{draft}\n---",
+                    f"📝 *Brouillon — réponse à :*\n"
+                    f"👤 {email.get('from','')}\n"
+                    f"📌 Re: {email.get('subject','')}\n"
+                    f"{_sep()}\n\n"
+                    f"{draft}\n\n"
+                    f"{_sep()}",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="Markdown",
                 )
             except Exception as e:
                 await query.edit_message_text(f"❌ Erreur : {e}")
 
-    # ─── Free text handler ───────────────────────────────────────────────────
+    # ─── Free text / button handler ──────────────────────────────────────────
 
     async def handle_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
-            await update.message.reply_text(_unauthorized_msg())
+            await update.message.reply_text("⛔ Accès non autorisé.")
             return
 
         text = update.message.text.strip()
         mode = ctx.user_data.get("mode")
 
+        # ── Editing reply draft ──────────────────────────────────────────────
         if mode == "editing_reply":
             ctx.user_data.pop("mode", None)
             pending = ctx.bot_data.get(PENDING_REPLY_KEY)
             if not pending:
-                await update.message.reply_text("Aucun brouillon en cours.")
+                await update.message.reply_text("Aucun brouillon en cours.", reply_markup=_main_kb())
                 return
-            msg = await update.message.reply_text("⏳ Régénération du brouillon...")
+            msg = await update.message.reply_text("⏳ Régénération du brouillon…")
             try:
                 draft = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.draft_reply(pending["email"], text)
@@ -529,7 +626,10 @@ class MailBot:
                     InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
                 ]]
                 await msg.edit_text(
-                    f"📝 *Nouveau brouillon :*\n\n---\n{draft}\n---",
+                    f"📝 *Nouveau brouillon :*\n"
+                    f"{_sep()}\n\n"
+                    f"{draft}\n\n"
+                    f"{_sep()}",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="Markdown",
                 )
@@ -537,34 +637,63 @@ class MailBot:
                 await msg.edit_text(f"❌ Erreur : {e}")
             return
 
-        # General chat
-        msg = await update.message.reply_text("💭 Réflexion en cours...")
+        # ── Waiting for search term ──────────────────────────────────────────
+        if mode == "waiting_search":
+            ctx.user_data.pop("mode", None)
+            await self._do_search(update, ctx, text)
+            return
+
+        # ── Permanent keyboard buttons ───────────────────────────────────────
+        if text == BTN_SORT:
+            await self.cmd_sort(update, ctx)
+            return
+        if text == BTN_EMAILS:
+            await self.cmd_list_emails(update, ctx)
+            return
+        if text == BTN_SUMMARY:
+            await self.cmd_summary(update, ctx)
+            return
+        if text == BTN_HELP:
+            await self.cmd_help(update, ctx)
+            return
+        if text == BTN_SEARCH:
+            ctx.user_data["mode"] = "waiting_search"
+            await update.message.reply_text(
+                "🔍 *Recherche d'emails*\n\nEntrez votre terme de recherche :",
+                parse_mode="Markdown",
+                reply_markup=_main_kb(),
+            )
+            return
+        if text == BTN_NEWSLETTERS:
+            await self._do_search(update, ctx, "newsletter")
+            return
+
+        # ── General AI chat ──────────────────────────────────────────────────
+        msg = await update.message.reply_text("💭 Réflexion en cours…")
         try:
             last_emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
             if not last_emails:
-                await msg.edit_text("📥 Récupération de vos emails en cours...")
+                await msg.edit_text("📥 Récupération de vos emails en cours…")
                 last_emails = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.fetch_all_emails(max_per_account=50)
                 )
                 ctx.bot_data[LAST_EMAILS_KEY] = last_emails
-                await msg.edit_text("💭 Réflexion en cours...")
+                await msg.edit_text("💭 Réflexion en cours…")
 
             context = ""
             if last_emails:
                 lines = [f"{len(last_emails)} emails disponibles :"]
                 for i, e in enumerate(last_emails):
-                    cat = e.get("category", "")
-                    imp = e.get("importance", "")
-                    subj = e.get("subject", "(sans sujet)")
-                    sender = e.get("from", "")[:40]
-                    acc = e.get("account", "")
-                    lines.append(f"[{i}] {acc} | cat={cat} imp={imp} | De: {sender} | Sujet: {subj}")
+                    lines.append(
+                        f"[{i}] {e.get('account','')} | cat={e.get('category','')} imp={e.get('importance','')} "
+                        f"| De: {e.get('from','')[:40]} | Sujet: {e.get('subject','')}"
+                    )
                 context = "\n".join(lines)
 
             response = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.chat(text, context)
             )
-            await msg.edit_text(response)
+            await msg.edit_text(response, reply_markup=_main_kb())
         except Exception as e:
             logger.error(f"handle_message error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
