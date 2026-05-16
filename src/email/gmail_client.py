@@ -32,20 +32,39 @@ class GmailClient:
         self._authenticate()
 
     def _authenticate(self):
-        creds = None
-        if os.path.exists(self.token_file):
-            creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
+        creds = self._load_creds()
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                self._save_creds(creds)
             else:
                 creds = self._headless_auth()
-            with open(self.token_file, "w") as f:
-                f.write(creds.to_json())
+                self._save_creds(creds)
 
         self.service = build("gmail", "v1", credentials=creds)
         logger.info("Gmail authenticated successfully")
+
+    def _load_creds(self) -> Optional[Credentials]:
+        # Prefer env var (cloud deployments) over file
+        token_b64 = os.getenv("GMAIL_TOKEN_B64")
+        if token_b64:
+            try:
+                info = json.loads(base64.b64decode(token_b64).decode())
+                return Credentials.from_authorized_user_info(info, SCOPES)
+            except Exception as e:
+                logger.warning(f"Failed to load Gmail token from env: {e}")
+        if os.path.exists(self.token_file):
+            return Credentials.from_authorized_user_file(self.token_file, SCOPES)
+        return None
+
+    def _save_creds(self, creds: Credentials):
+        try:
+            os.makedirs(os.path.dirname(self.token_file), exist_ok=True)
+            with open(self.token_file, "w") as f:
+                f.write(creds.to_json())
+        except Exception as e:
+            logger.warning(f"Could not save Gmail token to file: {e}")
 
     def _headless_auth(self):
         from google_auth_oauthlib.flow import InstalledAppFlow as Flow

@@ -1,10 +1,11 @@
+import base64
+import json
 import os
 from datetime import datetime, timedelta
 from typing import Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -12,45 +13,54 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("google_calendar")
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+ALL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/calendar",
+]
 
 
 class GoogleCalendarClient:
     def __init__(self):
-        self.credentials_file = os.getenv("GMAIL_CREDENTIALS_FILE", "config/gmail_credentials.json")
         self.token_file = os.getenv("GMAIL_TOKEN_FILE", "config/gmail_token.json")
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
         self.service = None
         self._authenticate()
 
     def _authenticate(self):
-        creds = None
-        all_scopes = [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.modify",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/gmail.labels",
-            "https://www.googleapis.com/auth/calendar",
-        ]
-        if os.path.exists(self.token_file):
-            creds = Credentials.from_authorized_user_file(self.token_file, all_scopes)
+        creds = self._load_creds()
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+                self._save_creds(creds)
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(self.credentials_file, all_scopes)
-                flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
-                auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-                print(f"\n[GOOGLE CALENDAR AUTH] Ouvrez cette URL :\n{auth_url}\n")
-                code = input("[GOOGLE CALENDAR AUTH] Collez le code : ").strip()
-                flow.fetch_token(code=code)
-                creds = flow.credentials
-            with open(self.token_file, "w") as f:
-                f.write(creds.to_json())
+                raise RuntimeError("Google Calendar: no valid token. Run setup_auth.py first.")
 
         self.service = build("calendar", "v3", credentials=creds)
         logger.info("Google Calendar authenticated")
+
+    def _load_creds(self) -> Optional[Credentials]:
+        token_b64 = os.getenv("GMAIL_TOKEN_B64")
+        if token_b64:
+            try:
+                info = json.loads(base64.b64decode(token_b64).decode())
+                return Credentials.from_authorized_user_info(info, ALL_SCOPES)
+            except Exception as e:
+                logger.warning(f"Failed to load Calendar token from env: {e}")
+        if os.path.exists(self.token_file):
+            return Credentials.from_authorized_user_file(self.token_file, ALL_SCOPES)
+        return None
+
+    def _save_creds(self, creds: Credentials):
+        try:
+            os.makedirs(os.path.dirname(self.token_file), exist_ok=True)
+            with open(self.token_file, "w") as f:
+                f.write(creds.to_json())
+        except Exception as e:
+            logger.warning(f"Could not save Calendar token: {e}")
 
     def create_event(
         self,
