@@ -1,0 +1,26 @@
+# Environment
+.env
+*.env
+
+# Auth tokens (contain sensitive credentials)
+config/*_token.json
+config/*.flow
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp

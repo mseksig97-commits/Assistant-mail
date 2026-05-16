@@ -1,0 +1,35 @@
+# Telegram
+python-telegram-bot==21.6
+
+# AI / LLM
+anthropic==0.34.2
+
+# Email - Gmail
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.149.0
+
+# Email - Outlook / Microsoft
+msal==1.31.0
+requests==2.32.3
+
+# Calendar - Google
+# (already included via google-api-python-client)
+
+# Calendar - Microsoft (Outlook)
+# (already included via msal + requests)
+
+# Scheduling
+apscheduler==3.10.4
+
+# Data
+python-dateutil==2.9.0
+pytz==2024.2
+
+# Env / Config
+python-dotenv==1.0.1
+
+# Utilities
+aiohttp==3.10.10
+tenacity==9.0.0
