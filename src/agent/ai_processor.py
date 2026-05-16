@@ -1,6 +1,6 @@
 import os
+import re
 import json
-from typing import Optional
 from datetime import datetime
 
 import anthropic
@@ -31,6 +31,22 @@ class AIProcessor:
         )
         return msg.content[0].text.strip()
 
+    def _call_json(self, prompt: str, max_tokens: int = 2000) -> dict:
+        """Call the model with JSON prefill to guarantee clean JSON output."""
+        msg = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=SYSTEM_PROMPT,
+            messages=[
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+        raw = "{" + msg.content[0].text.strip()
+        # Fallback: strip markdown fences if the model still wrapped the output
+        raw = re.sub(r'^```(?:json)?\s*\n?', '', raw).rstrip('`').strip()
+        return json.loads(raw)
+
     def analyze_email(self, email: dict) -> dict:
         """Returns category, importance (1-5), summary, suggested_action, events."""
         prompt = f"""Analyse cet email et retourne un JSON avec exactement ces champs :
@@ -58,10 +74,9 @@ Date : {email.get('date', '')}
 Corps : {email.get('body', email.get('snippet', ''))[:3000]}
 """
         try:
-            raw = self._call(prompt)
-            return json.loads(raw)
+            return self._call_json(prompt)
         except Exception as e:
-            logger.error(f"analyze_email error: {e} | raw={raw[:200] if 'raw' in dir() else ''}")
+            logger.error(f"analyze_email error: {e}")
             return {"category": "other", "importance": 2, "summary": email.get("snippet", ""),
                     "suggested_action": "Vérifier manuellement", "needs_reply": False, "events": []}
 
