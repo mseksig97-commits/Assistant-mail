@@ -14,6 +14,7 @@ from telegram.ext import (
 
 from src.agent.email_manager import EmailManager
 from src.utils.logger import setup_logger
+from src.utils.unsubscribe import extract_unsubscribe, do_http_unsubscribe
 
 logger = setup_logger("telegram_bot")
 
@@ -49,6 +50,7 @@ class MailBot:
         self.app.add_handler(CommandHandler("recherche", self.cmd_search))
         self.app.add_handler(CommandHandler("repondre", self.cmd_reply))
         self.app.add_handler(CommandHandler("voir", self.cmd_view_email))
+        self.app.add_handler(CommandHandler("desabonner", self.cmd_unsubscribe))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
@@ -82,6 +84,7 @@ class MailBot:
             "/recherche <terme> — 🔍 Recherche dans vos emails\n"
             "/voir <n> — Lire un email complet\n"
             "/repondre <n> — Rédige une réponse avec IA\n"
+            "/desabonner <n> — Se désabonner d'une newsletter\n"
             "/aide — Cette aide\n\n"
             "💬 Écrivez librement pour poser des questions ou donner des instructions.",
             parse_mode="Markdown",
@@ -249,9 +252,12 @@ class MailBot:
             text += f"*Catégorie :* {e.get('category')} | *Importance :* {e.get('importance','?')}/5\n"
         text += f"\n{body_preview}"
 
-        keyboard = [[
-            InlineKeyboardButton("✏️ Répondre", callback_data=f"reply_{idx}"),
-        ]]
+        from src.utils.unsubscribe import extract_unsubscribe
+        unsub_info = extract_unsubscribe(e)
+        buttons = [InlineKeyboardButton("✏️ Répondre", callback_data=f"reply_{idx}")]
+        if unsub_info["url"] or unsub_info["mailto"]:
+            buttons.append(InlineKeyboardButton("🔕 Se désabonner", callback_data=f"unsub_{idx}"))
+        keyboard = [buttons]
         if len(text) > 4000:
             text = text[:4000] + "\n…"
         await update.message.reply_text(
@@ -300,6 +306,61 @@ class MailBot:
             logger.error(f"cmd_reply error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
 
+    async def cmd_unsubscribe(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not _allowed(update):
+            await update.message.reply_text(_unauthorized_msg())
+            return
+        emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+        if not ctx.args or not ctx.args[0].isdigit():
+            await update.message.reply_text(
+                "Usage : /desabonner <index>\n"
+                "Utilisez /recherche newsletter ou /emails pour trouver l'index."
+            )
+            return
+        idx = int(ctx.args[0])
+        if idx >= len(emails):
+            await update.message.reply_text(f"Index invalide. Max : {len(emails)-1}")
+            return
+
+        email = emails[idx]
+        info = extract_unsubscribe(email)
+
+        if not info["url"] and not info["mailto"]:
+            await update.message.reply_text(
+                f"⚠️ Impossible de trouver un lien de désabonnement pour :\n"
+                f"*{email.get('subject', '')}*\n\n"
+                f"Tu peux ouvrir l'email avec /voir {idx} et chercher le lien manuellement.",
+                parse_mode="Markdown",
+            )
+            return
+
+        method_label = {
+            "one_click": "✅ Désabonnement en 1 clic (RFC 8058)",
+            "http": "🌐 Lien de désabonnement",
+            "mailto": "📧 Email de désabonnement",
+        }.get(info["method"], "")
+
+        sender = email.get("from", "")
+        subj = email.get("subject", "")
+        target = info["url"] or info["mailto"]
+
+        ctx.user_data["pending_unsub"] = {"email": email, "info": info, "idx": idx}
+
+        keyboard = [[
+            InlineKeyboardButton("✅ Confirmer le désabonnement", callback_data="confirm_unsub"),
+            InlineKeyboardButton("❌ Annuler", callback_data="cancel_unsub"),
+        ]]
+        await update.message.reply_text(
+            f"🔕 *Désabonnement*\n\n"
+            f"*De :* {sender}\n"
+            f"*Sujet :* {subj}\n\n"
+            f"{method_label}\n"
+            f"`{target[:80]}`\n\n"
+            f"Confirmes-tu le désabonnement ?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
     # ─── Callbacks ───────────────────────────────────────────────────────────
 
     async def handle_callback(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -331,6 +392,87 @@ class MailBot:
         elif data == "cancel_reply":
             ctx.bot_data.pop(PENDING_REPLY_KEY, None)
             await query.edit_message_text("❌ Réponse annulée.")
+
+        elif data == "confirm_unsub":
+            pending = ctx.user_data.pop("pending_unsub", None)
+            if not pending:
+                await query.edit_message_text("❌ Aucune demande en cours.")
+                return
+            info = pending["info"]
+            email = pending["email"]
+            await query.edit_message_text("⏳ Désabonnement en cours...")
+            try:
+                if info["url"]:
+                    one_click = info["method"] == "one_click"
+                    success, msg_txt = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: do_http_unsubscribe(info["url"], one_click)
+                    )
+                    if success:
+                        await query.edit_message_text(
+                            f"✅ *Désabonné avec succès !*\n\n"
+                            f"*De :* {email.get('from','')}\n"
+                            f"{msg_txt}",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        await query.edit_message_text(
+                            f"⚠️ *Le désabonnement a échoué.*\n{msg_txt}\n\n"
+                            f"Essaie de cliquer manuellement sur le lien dans l'email `/voir {pending['idx']}`.",
+                            parse_mode="Markdown",
+                        )
+                elif info["mailto"]:
+                    addr = info["mailto"].replace("mailto:", "").split("?")[0]
+                    subject_part = "unsubscribe"
+                    if "subject=" in info["mailto"]:
+                        subject_part = info["mailto"].split("subject=")[1].split("&")[0]
+                    account = email.get("account", "gmail")
+                    if account == "gmail":
+                        ok = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: self.manager.gmail.send_email(addr, subject_part, "unsubscribe")
+                        )
+                    elif account == "outlook1":
+                        ok = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: self.manager.outlook1.send_email(addr, subject_part, "unsubscribe")
+                        )
+                    else:
+                        ok = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: self.manager.outlook2.send_email(addr, subject_part, "unsubscribe")
+                        )
+                    if ok:
+                        await query.edit_message_text(
+                            f"✅ *Email de désabonnement envoyé !*\n\nÀ : {addr}",
+                            parse_mode="Markdown",
+                        )
+                    else:
+                        await query.edit_message_text("❌ Échec de l'envoi de l'email de désabonnement.")
+            except Exception as e:
+                await query.edit_message_text(f"❌ Erreur : {e}")
+
+        elif data == "cancel_unsub":
+            ctx.user_data.pop("pending_unsub", None)
+            await query.edit_message_text("❌ Désabonnement annulé.")
+
+        elif data.startswith("unsub_"):
+            idx = int(data.split("_")[1])
+            emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+            if idx >= len(emails):
+                await query.edit_message_text("❌ Email introuvable.")
+                return
+            email = emails[idx]
+            info = extract_unsubscribe(email)
+            ctx.user_data["pending_unsub"] = {"email": email, "info": info, "idx": idx}
+            target = info["url"] or info["mailto"] or ""
+            method_label = {"one_click": "✅ 1 clic", "http": "🌐 Lien web", "mailto": "📧 Email"}.get(info["method"], "")
+            keyboard = [[
+                InlineKeyboardButton("✅ Confirmer", callback_data="confirm_unsub"),
+                InlineKeyboardButton("❌ Annuler", callback_data="cancel_unsub"),
+            ]]
+            await query.edit_message_text(
+                f"🔕 *Désabonnement de :* {email.get('from','')}\n"
+                f"{method_label} — `{target[:80]}`\n\nConfirmer ?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown",
+            )
 
         elif data.startswith("reply_"):
             idx = int(data.split("_")[1])

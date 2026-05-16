@@ -117,6 +117,8 @@ class OutlookClient:
             return None
 
     def _parse_message(self, msg: dict) -> dict:
+        # Extract List-Unsubscribe from internet message headers if present
+        inet_headers = {h["name"]: h["value"] for h in msg.get("internetMessageHeaders", [])}
         return {
             "id": msg.get("id"),
             "account": self.account_label,
@@ -127,6 +129,7 @@ class OutlookClient:
             "body": msg.get("body", {}).get("content", ""),
             "labels": [msg.get("inferenceClassification", "")],
             "snippet": msg.get("bodyPreview", ""),
+            "list_unsubscribe": inet_headers.get("List-Unsubscribe", ""),
             "is_read": msg.get("isRead", False),
             "conversation_id": msg.get("conversationId"),
         }

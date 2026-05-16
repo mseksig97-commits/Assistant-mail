@@ -111,6 +111,7 @@ class GmailClient:
                 "from": headers.get("From", ""),
                 "to": headers.get("To", ""),
                 "date": headers.get("Date", ""),
+                "list_unsubscribe": headers.get("List-Unsubscribe", ""),
                 "body": body,
                 "labels": msg.get("labelIds", []),
                 "snippet": msg.get("snippet", ""),
