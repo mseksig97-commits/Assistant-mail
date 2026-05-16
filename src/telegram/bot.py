@@ -44,7 +44,6 @@ class MailBot:
         self.app.add_handler(CommandHandler("aide", self.cmd_help))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("trier", self.cmd_sort))
-        self.app.add_handler(CommandHandler("résumé", self.cmd_summary))
         self.app.add_handler(CommandHandler("resume", self.cmd_summary))
         self.app.add_handler(CommandHandler("emails", self.cmd_list_emails))
         self.app.add_handler(CommandHandler("recherche", self.cmd_search))
