@@ -26,8 +26,26 @@ from src.telegram.bot import MailBot
 
 logger = setup_logger("main")
 
+REQUIRED_ENV_VARS = [
+    "TELEGRAM_BOT_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "GMAIL_TOKEN_B64",
+    "OUTLOOK1_TOKEN_B64",
+    "OUTLOOK2_TOKEN_B64",
+]
+
+def _check_env_vars():
+    missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v)]
+    present = [v for v in REQUIRED_ENV_VARS if os.getenv(v)]
+    if present:
+        logger.info(f"Env vars present: {', '.join(present)}")
+    if missing:
+        logger.error(f"MISSING env vars: {', '.join(missing)}")
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
 
 async def main():
+    _check_env_vars()
     logger.info("Initializing Email AI Agent...")
 
     manager = EmailManager()

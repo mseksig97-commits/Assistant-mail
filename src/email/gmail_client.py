@@ -38,6 +38,11 @@ class GmailClient:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
                 self._save_creds(creds)
+            elif os.getenv("GMAIL_TOKEN_B64") or not os.path.exists(self.credentials_file):
+                raise RuntimeError(
+                    "Gmail: no valid token. Set GMAIL_TOKEN_B64 env var with a valid token. "
+                    "Run setup_auth.py locally first."
+                )
             else:
                 creds = self._headless_auth()
                 self._save_creds(creds)
