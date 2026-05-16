@@ -224,7 +224,10 @@ class MailBot:
             await msg.edit_text("\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"cmd_sort error: {e}")
-            await msg.edit_text(f"❌ Erreur lors du tri : {e}")
+            try:
+                await msg.edit_text(f"❌ Erreur lors du tri : {e}")
+            except Exception:
+                await update.message.reply_text(f"❌ Erreur lors du tri : {e}")
 
     async def cmd_summary(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
@@ -235,18 +238,18 @@ class MailBot:
             summary = await asyncio.get_event_loop().run_in_executor(
                 None, self.manager.generate_daily_summary
             )
-            account = _current_account(ctx)
-            kb = _account_kb() if account else _main_kb()
             if len(summary) <= 4096:
-                await msg.edit_text(summary, reply_markup=kb)
+                await msg.edit_text(summary)
             else:
                 await msg.delete()
-                chunks = [summary[i:i+4000] for i in range(0, len(summary), 4000)]
-                for j, chunk in enumerate(chunks):
-                    await update.message.reply_text(chunk, reply_markup=kb if j == len(chunks) - 1 else None)
+                for chunk in [summary[i:i+4000] for i in range(0, len(summary), 4000)]:
+                    await update.message.reply_text(chunk)
         except Exception as e:
             logger.error(f"cmd_summary error: {e}")
-            await msg.edit_text(f"❌ Erreur : {e}")
+            try:
+                await msg.edit_text(f"❌ Erreur : {e}")
+            except Exception:
+                await update.message.reply_text(f"❌ Erreur : {e}")
 
     async def cmd_list_emails(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
@@ -287,7 +290,10 @@ class MailBot:
             await msg.edit_text(text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"cmd_list_emails error: {e}")
-            await msg.edit_text(f"❌ Erreur : {e}")
+            try:
+                await msg.edit_text(f"❌ Erreur : {e}")
+            except Exception:
+                await update.message.reply_text(f"❌ Erreur : {e}")
 
     async def cmd_search(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
@@ -345,7 +351,10 @@ class MailBot:
             await msg.edit_text(text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"_do_search error: {e}")
-            await msg.edit_text(f"❌ Erreur : {e}")
+            try:
+                await msg.edit_text(f"❌ Erreur : {e}")
+            except Exception:
+                await update.message.reply_text(f"❌ Erreur : {e}")
 
     async def cmd_view_email(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
@@ -715,13 +724,14 @@ class MailBot:
             acc_icon = _ACC_ICON[account]
             acc_label = _ACC_LABEL[account]
 
-            msg = await update.message.reply_text(
-                f"{acc_icon} *{acc_label}*\n"
-                f"{_sep()}\n\n"
-                f"Récupération des emails…",
+            # Switch the reply keyboard (this message is intentionally not edited later)
+            await update.message.reply_text(
+                f"{acc_icon} *{acc_label}*",
                 parse_mode="Markdown",
                 reply_markup=_account_kb(),
             )
+            # Separate editable loading message (no ReplyKeyboardMarkup)
+            msg = await update.message.reply_text("⏳ Récupération des emails…")
             try:
                 emails = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.fetch_account_emails(account, max_results=15)
@@ -746,7 +756,10 @@ class MailBot:
                 await msg.edit_text(text_out, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"mailbox select error: {e}")
-                await msg.edit_text(f"❌ Erreur : {e}")
+                try:
+                    await msg.edit_text(f"❌ Erreur : {e}")
+                except Exception:
+                    await update.message.reply_text(f"❌ Erreur : {e}")
             return
 
         # ── Level 2 — Account sub-menu actions ───────────────────────────────
@@ -827,11 +840,13 @@ class MailBot:
             response = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.chat(update.message.text.strip(), context)
             )
-            kb = _account_kb() if account else _main_kb()
-            await msg.edit_text(response, reply_markup=kb)
+            await msg.edit_text(response)
         except Exception as e:
             logger.error(f"handle_message error: {e}")
-            await msg.edit_text(f"❌ Erreur : {e}")
+            try:
+                await msg.edit_text(f"❌ Erreur : {e}")
+            except Exception:
+                await update.message.reply_text(f"❌ Erreur : {e}")
 
     # ─── Run ─────────────────────────────────────────────────────────────────
 
