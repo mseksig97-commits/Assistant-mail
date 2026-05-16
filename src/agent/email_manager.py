@@ -137,11 +137,28 @@ class EmailManager:
 
     # ─── Search ──────────────────────────────────────────────────────────────
 
-    def search_emails(self, query: str, max_results: int = 20) -> list[dict]:
-        results = self.gmail.list_emails(max_results=max_results, query=query)
+    def fetch_account_emails(self, account: str, max_results: int = 30) -> list[dict]:
+        """Fetch emails from a single account."""
+        if account == "gmail":
+            return self.gmail.list_emails(max_results=max_results)
+        if account == "outlook1":
+            return self.outlook1.list_emails(max_results=max_results)
+        if account == "outlook2":
+            return self.outlook2.list_emails(max_results=max_results)
+        return self.fetch_all_emails(max_results)
+
+    def search_emails(self, query: str, max_results: int = 20, account: str = "") -> list[dict]:
+        results = []
         q = query.lower()
-        for client in [self.outlook1, self.outlook2]:
-            for email in client.list_emails(max_results=100):
+        if not account or account == "gmail":
+            results += self.gmail.list_emails(max_results=max_results, query=query)
+        if not account or account == "outlook1":
+            for email in self.outlook1.list_emails(max_results=100):
+                text = f"{email['subject']} {email['from']} {email.get('body','')} {email.get('snippet','')}".lower()
+                if q in text:
+                    results.append(email)
+        if not account or account == "outlook2":
+            for email in self.outlook2.list_emails(max_results=100):
                 text = f"{email['subject']} {email['from']} {email.get('body','')} {email.get('snippet','')}".lower()
                 if q in text:
                     results.append(email)

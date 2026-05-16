@@ -19,20 +19,36 @@ logger = setup_logger("telegram_bot")
 
 PENDING_REPLY_KEY = "pending_reply"
 LAST_EMAILS_KEY = "last_emails"
+CURRENT_ACCOUNT_KEY = "current_account"
 
 _ACC_ICON = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}
+_ACC_LABEL = {"gmail": "Gmail", "outlook1": "Outlook 1", "outlook2": "Outlook 2"}
 _CAT_LABEL = {
     "urgent": "⚡ Urgent", "important": "⭐ Important", "work": "💼 Travail",
     "personal": "👤 Personnel", "finance": "💰 Finance", "newsletter": "📰 Newsletter",
     "spam": "🗑️ Spam", "social": "🌐 Social", "information": "ℹ️ Info", "other": "📁 Autre",
 }
 
-BTN_SORT = "📊 Trier"
-BTN_EMAILS = "📬 Emails"
+# ── Main menu buttons ──────────────────────────────────────────────────────────
+BTN_GMAIL = "📧 Gmail"
+BTN_OUTLOOK1 = "📨 Outlook 1"
+BTN_OUTLOOK2 = "📩 Outlook 2"
+BTN_SORT_ALL = "📊 Trier tout"
 BTN_SUMMARY = "📋 Résumé"
+BTN_HELP = "❓ Aide"
+
+# ── Account sub-menu buttons ───────────────────────────────────────────────────
+BTN_EMAILS = "📬 Emails"
 BTN_SEARCH = "🔍 Rechercher"
 BTN_NEWSLETTERS = "🔕 Newsletters"
-BTN_HELP = "❓ Aide"
+BTN_SORT_ACC = "📊 Trier"
+BTN_BACK = "↩️ Retour"
+
+_BTN_TO_ACCOUNT = {
+    BTN_GMAIL: "gmail",
+    BTN_OUTLOOK1: "outlook1",
+    BTN_OUTLOOK2: "outlook2",
+}
 
 
 def _allowed(update: Update) -> bool:
@@ -43,10 +59,23 @@ def _allowed(update: Update) -> bool:
 
 
 def _main_kb() -> ReplyKeyboardMarkup:
+    """Level 1 — mailbox selection."""
     return ReplyKeyboardMarkup(
         [
-            [BTN_SORT, BTN_EMAILS, BTN_SUMMARY],
-            [BTN_SEARCH, BTN_NEWSLETTERS, BTN_HELP],
+            [BTN_GMAIL, BTN_OUTLOOK1, BTN_OUTLOOK2],
+            [BTN_SORT_ALL, BTN_SUMMARY, BTN_HELP],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def _account_kb() -> ReplyKeyboardMarkup:
+    """Level 2 — actions on the selected mailbox."""
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_EMAILS, BTN_SEARCH, BTN_NEWSLETTERS],
+            [BTN_SORT_ACC, BTN_BACK, BTN_HELP],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -84,6 +113,10 @@ def _email_card(i: int, e: dict, show_snippet: bool = True) -> str:
     return "\n".join(lines)
 
 
+def _current_account(ctx: ContextTypes.DEFAULT_TYPE) -> str:
+    return ctx.user_data.get(CURRENT_ACCOUNT_KEY, "")
+
+
 class MailBot:
     def __init__(self, manager: EmailManager):
         self.manager = manager
@@ -110,11 +143,12 @@ class MailBot:
         if not _allowed(update):
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
+        ctx.user_data.pop(CURRENT_ACCOUNT_KEY, None)
         await update.message.reply_text(
             "👋 *Bonjour ! Je suis votre assistant email IA.*\n"
             f"{_sep()}\n\n"
-            "📬 Je gère *3 comptes* : Gmail + 2×Outlook\n\n"
-            "Utilisez les boutons du menu ou écrivez-moi librement !",
+            "📬 Sélectionnez une boîte mail pour commencer,\n"
+            "ou utilisez les actions globales ci-dessous.",
             parse_mode="Markdown",
             reply_markup=_main_kb(),
         )
@@ -123,14 +157,21 @@ class MailBot:
         if not _allowed(update):
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
+        account = _current_account(ctx)
+        acc_label = f" — {_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else ""
         await update.message.reply_text(
-            "❓ *Aide — Commandes disponibles*\n"
+            f"❓ *Aide{acc_label}*\n"
             f"{_sep()}\n\n"
-            "📊 *Trier* — Analyse et classe tous vos emails\n"
-            "📬 *Emails* — Liste les derniers emails\n"
-            "📋 *Résumé* — Résumé quotidien IA\n"
-            "🔍 *Rechercher* — Chercher dans vos emails\n"
-            "🔕 *Newsletters* — Gérer les newsletters\n\n"
+            "*Menu principal :*\n"
+            "📧 Gmail / 📨 Outlook 1 / 📩 Outlook 2 — Sélectionner une boîte\n"
+            "📊 Trier tout — Analyser tous les emails\n"
+            "📋 Résumé — Résumé quotidien IA\n\n"
+            "*Sous-menu de la boîte :*\n"
+            "📬 Emails — Voir les derniers emails\n"
+            "🔍 Rechercher — Chercher dans la boîte\n"
+            "🔕 Newsletters — Gérer les newsletters\n"
+            "📊 Trier — Analyser cette boîte\n"
+            "↩️ Retour — Retour au menu principal\n\n"
             f"{_sep()}\n\n"
             "*Commandes texte :*\n"
             "`/voir <n>` — Lire un email complet\n"
@@ -139,19 +180,24 @@ class MailBot:
             "`/recherche <terme>` — Recherche avancée\n\n"
             "💬 Écrivez librement pour poser des questions !",
             parse_mode="Markdown",
-            reply_markup=_main_kb(),
+            reply_markup=_account_kb() if account else _main_kb(),
         )
 
     async def cmd_sort(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
-        msg = await update.message.reply_text("⏳ Analyse et tri en cours… (1-2 min)")
+        account = _current_account(ctx)
+        acc_label = f"{_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else "tous les comptes"
+        msg = await update.message.reply_text(f"⏳ Analyse de *{acc_label}* en cours… (1-2 min)", parse_mode="Markdown")
 
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.analyze_and_sort(30)
             )
+            # Filter by account if in account context
+            if account:
+                results = [e for e in results if e.get("account") == account]
             ctx.bot_data[LAST_EMAILS_KEY] = results
 
             cats: dict[str, int] = {}
@@ -162,13 +208,12 @@ class MailBot:
                 events_count += len(e.get("events", []))
 
             lines = [
-                f"✅ *{len(results)} emails analysés et triés*",
+                f"✅ *{len(results)} emails analysés — {acc_label}*",
                 _sep(),
                 "",
             ]
             for cat, count in sorted(cats.items(), key=lambda x: -x[1]):
                 label = _CAT_LABEL.get(cat, f"📁 {cat}")
-                bar = "█" * count
                 lines.append(f"{label} — *{count}*")
             if events_count:
                 lines.append("")
@@ -190,14 +235,15 @@ class MailBot:
             summary = await asyncio.get_event_loop().run_in_executor(
                 None, self.manager.generate_daily_summary
             )
+            account = _current_account(ctx)
+            kb = _account_kb() if account else _main_kb()
             if len(summary) <= 4096:
-                await msg.edit_text(summary, reply_markup=_main_kb())
+                await msg.edit_text(summary, reply_markup=kb)
             else:
                 await msg.delete()
                 chunks = [summary[i:i+4000] for i in range(0, len(summary), 4000)]
                 for j, chunk in enumerate(chunks):
-                    kb = _main_kb() if j == len(chunks) - 1 else None
-                    await update.message.reply_text(chunk, reply_markup=kb)
+                    await update.message.reply_text(chunk, reply_markup=kb if j == len(chunks) - 1 else None)
         except Exception as e:
             logger.error(f"cmd_summary error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
@@ -207,17 +253,24 @@ class MailBot:
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
         args = ctx.args
-        n = int(args[0]) if args and args[0].isdigit() else 10
+        n = int(args[0]) if args and args[0].isdigit() else 15
+        account = _current_account(ctx)
+        acc_label = f"{_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else "tous les comptes"
 
-        msg = await update.message.reply_text("⏳ Récupération des emails…")
+        msg = await update.message.reply_text(f"⏳ Récupération des emails — *{acc_label}*…", parse_mode="Markdown")
         try:
-            emails = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.fetch_all_emails(max_per_account=n)
-            )
+            if account:
+                emails = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.fetch_account_emails(account, max_results=n)
+                )
+            else:
+                emails = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.fetch_all_emails(max_per_account=n)
+                )
             ctx.bot_data[LAST_EMAILS_KEY] = emails
 
             lines = [
-                f"📬 *{len(emails)} emails récupérés*",
+                f"📬 *{len(emails)} emails — {acc_label}*",
                 _sep(),
                 "",
             ]
@@ -241,8 +294,10 @@ class MailBot:
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
         if not ctx.args:
+            account = _current_account(ctx)
+            acc_label = f" dans {_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else ""
             await update.message.reply_text(
-                "🔍 *Recherche d'emails*\n"
+                f"🔍 *Recherche d'emails{acc_label}*\n"
                 f"{_sep()}\n\n"
                 "Usage : `/recherche <terme>`\n\n"
                 "Exemples :\n"
@@ -250,28 +305,30 @@ class MailBot:
                 "  `/recherche newsletter`\n"
                 "  `/recherche jean@example.com`",
                 parse_mode="Markdown",
-                reply_markup=_main_kb(),
+                reply_markup=_account_kb() if account else _main_kb(),
             )
             return
         query = " ".join(ctx.args)
         await self._do_search(update, ctx, query)
 
     async def _do_search(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE, query: str):
-        msg = await update.message.reply_text(f"🔍 Recherche de « {query} »…")
+        account = _current_account(ctx)
+        acc_label = f" dans {_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else ""
+        msg = await update.message.reply_text(f"🔍 Recherche de « {query} »{acc_label}…")
         try:
             results = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.search_emails(query)
+                None, lambda: self.manager.search_emails(query, account=account)
             )
             if not results:
                 await msg.edit_text(
-                    f"🔍 Aucun résultat pour *« {query} »*\n\nEssayez un autre terme.",
+                    f"🔍 Aucun résultat pour *« {query} »*{acc_label}\n\nEssayez un autre terme.",
                     parse_mode="Markdown",
                 )
                 return
 
             ctx.bot_data[LAST_EMAILS_KEY] = results
             lines = [
-                f"🔍 *{len(results)} résultat(s) pour « {query} »*",
+                f"🔍 *{len(results)} résultat(s) pour « {query} »{acc_label}*",
                 _sep(),
                 "",
             ]
@@ -287,7 +344,7 @@ class MailBot:
                 text = text[:4000] + "\n…"
             await msg.edit_text(text, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"cmd_search error: {e}")
+            logger.error(f"_do_search error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
 
     async def cmd_view_email(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -296,15 +353,20 @@ class MailBot:
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
         if not ctx.args or not ctx.args[0].isdigit():
+            account = _current_account(ctx)
             await update.message.reply_text(
                 "Usage : `/voir <index>`\nUtilisez *Emails* ou *Rechercher* d'abord.",
                 parse_mode="Markdown",
-                reply_markup=_main_kb(),
+                reply_markup=_account_kb() if account else _main_kb(),
             )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
+            account = _current_account(ctx)
+            await update.message.reply_text(
+                f"❌ Index invalide. Max : {len(emails)-1}",
+                reply_markup=_account_kb() if account else _main_kb(),
+            )
             return
 
         e = emails[idx]
@@ -331,13 +393,12 @@ class MailBot:
         buttons = [InlineKeyboardButton("✏️ Répondre", callback_data=f"reply_{idx}")]
         if unsub_info["url"] or unsub_info["mailto"]:
             buttons.append(InlineKeyboardButton("🔕 Se désabonner", callback_data=f"unsub_{idx}"))
-        keyboard = [buttons]
 
         if len(text) > 4000:
             text = text[:4000] + "\n…"
         await update.message.reply_text(
             text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup([buttons]),
             parse_mode="Markdown",
         )
 
@@ -346,16 +407,20 @@ class MailBot:
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+        account = _current_account(ctx)
         if not ctx.args or not ctx.args[0].isdigit():
             await update.message.reply_text(
                 "Usage : `/repondre <index>`\nUtilisez *Emails* pour voir les index.",
                 parse_mode="Markdown",
-                reply_markup=_main_kb(),
+                reply_markup=_account_kb() if account else _main_kb(),
             )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
+            await update.message.reply_text(
+                f"❌ Index invalide. Max : {len(emails)-1}",
+                reply_markup=_account_kb() if account else _main_kb(),
+            )
             return
 
         email = emails[idx]
@@ -366,7 +431,6 @@ class MailBot:
                 None, lambda: self.manager.draft_reply(email, instructions)
             )
             ctx.bot_data[PENDING_REPLY_KEY] = {"email": email, "draft": draft}
-
             keyboard = [[
                 InlineKeyboardButton("✅ Envoyer", callback_data="send_reply"),
                 InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
@@ -391,17 +455,21 @@ class MailBot:
             await update.message.reply_text("⛔ Accès non autorisé.")
             return
         emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+        account = _current_account(ctx)
         if not ctx.args or not ctx.args[0].isdigit():
             await update.message.reply_text(
                 "Usage : `/desabonner <index>`\n"
-                "Utilisez *Newsletters* ou *Rechercher* pour trouver l'index.",
+                "Utilisez *Newsletters* ou *Emails* pour trouver l'index.",
                 parse_mode="Markdown",
-                reply_markup=_main_kb(),
+                reply_markup=_account_kb() if account else _main_kb(),
             )
             return
         idx = int(ctx.args[0])
         if idx >= len(emails):
-            await update.message.reply_text(f"❌ Index invalide. Max : {len(emails)-1}", reply_markup=_main_kb())
+            await update.message.reply_text(
+                f"❌ Index invalide. Max : {len(emails)-1}",
+                reply_markup=_account_kb() if account else _main_kb(),
+            )
             return
 
         email = emails[idx]
@@ -411,9 +479,9 @@ class MailBot:
             await update.message.reply_text(
                 f"⚠️ *Aucun lien de désabonnement trouvé*\n\n"
                 f"Email : *{email.get('subject', '')}*\n\n"
-                f"Utilisez `/voir {idx}` pour chercher le lien manuellement.",
+                f"Utilisez `/voir {idx}` pour chercher manuellement.",
                 parse_mode="Markdown",
-                reply_markup=_main_kb(),
+                reply_markup=_account_kb() if account else _main_kb(),
             )
             return
 
@@ -466,7 +534,7 @@ class MailBot:
         elif data == "edit_reply":
             await query.edit_message_text(
                 "✏️ *Modification du brouillon*\n\n"
-                "Envoyez-moi vos instructions ou corrections, je régénèrerai le brouillon.",
+                "Envoyez vos instructions ou corrections, je régénèrerai le brouillon.",
                 parse_mode="Markdown",
             )
             ctx.user_data["mode"] = "editing_reply"
@@ -500,7 +568,7 @@ class MailBot:
                     else:
                         await query.edit_message_text(
                             f"⚠️ *Le désabonnement a échoué.*\n{msg_txt}\n\n"
-                            f"Essaie de cliquer manuellement : `/voir {pending['idx']}`",
+                            f"Essaie manuellement : `/voir {pending['idx']}`",
                             parse_mode="Markdown",
                         )
                 elif info["mailto"]:
@@ -548,11 +616,7 @@ class MailBot:
                 return
             ctx.user_data["pending_unsub"] = {"email": email, "info": info, "idx": idx}
             target = info["url"] or info["mailto"] or ""
-            method_label = {
-                "one_click": "✅ 1 clic",
-                "http": "🌐 Lien web",
-                "mailto": "📧 Email",
-            }.get(info["method"], "")
+            method_label = {"one_click": "✅ 1 clic", "http": "🌐 Lien web", "mailto": "📧 Email"}.get(info["method"], "")
             keyboard = [[
                 InlineKeyboardButton("✅ Confirmer", callback_data="confirm_unsub"),
                 InlineKeyboardButton("❌ Annuler", callback_data="cancel_unsub"),
@@ -612,7 +676,8 @@ class MailBot:
             ctx.user_data.pop("mode", None)
             pending = ctx.bot_data.get(PENDING_REPLY_KEY)
             if not pending:
-                await update.message.reply_text("Aucun brouillon en cours.", reply_markup=_main_kb())
+                account = _current_account(ctx)
+                await update.message.reply_text("Aucun brouillon en cours.", reply_markup=_account_kb() if account else _main_kb())
                 return
             msg = await update.message.reply_text("⏳ Régénération du brouillon…")
             try:
@@ -643,29 +708,92 @@ class MailBot:
             await self._do_search(update, ctx, text)
             return
 
-        # ── Permanent keyboard buttons ───────────────────────────────────────
-        if text == BTN_SORT:
-            await self.cmd_sort(update, ctx)
+        # ── Level 1 — Mailbox selection ──────────────────────────────────────
+        if text in _BTN_TO_ACCOUNT:
+            account = _BTN_TO_ACCOUNT[text]
+            ctx.user_data[CURRENT_ACCOUNT_KEY] = account
+            acc_icon = _ACC_ICON[account]
+            acc_label = _ACC_LABEL[account]
+
+            msg = await update.message.reply_text(
+                f"{acc_icon} *{acc_label}*\n"
+                f"{_sep()}\n\n"
+                f"Récupération des emails…",
+                parse_mode="Markdown",
+                reply_markup=_account_kb(),
+            )
+            try:
+                emails = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.fetch_account_emails(account, max_results=15)
+                )
+                ctx.bot_data[LAST_EMAILS_KEY] = emails
+
+                lines = [
+                    f"{acc_icon} *{acc_label} — {len(emails)} emails*",
+                    _sep(),
+                    "",
+                ]
+                for i, e in enumerate(emails[:15]):
+                    lines.append(_email_card(i, e, show_snippet=False))
+                    lines.append("")
+
+                lines.append(_sep())
+                lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre")
+
+                text_out = "\n".join(lines)
+                if len(text_out) > 4000:
+                    text_out = text_out[:4000] + "\n…"
+                await msg.edit_text(text_out, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"mailbox select error: {e}")
+                await msg.edit_text(f"❌ Erreur : {e}")
             return
+
+        # ── Level 2 — Account sub-menu actions ───────────────────────────────
+        account = _current_account(ctx)
+
         if text == BTN_EMAILS:
             await self.cmd_list_emails(update, ctx)
             return
-        if text == BTN_SUMMARY:
-            await self.cmd_summary(update, ctx)
-            return
-        if text == BTN_HELP:
-            await self.cmd_help(update, ctx)
-            return
+
         if text == BTN_SEARCH:
             ctx.user_data["mode"] = "waiting_search"
+            acc_label = f"{_ACC_ICON.get(account,'')} {_ACC_LABEL.get(account,'')}" if account else "tous les comptes"
             await update.message.reply_text(
-                "🔍 *Recherche d'emails*\n\nEntrez votre terme de recherche :",
+                f"🔍 *Recherche — {acc_label}*\n\nEntrez votre terme de recherche :",
+                parse_mode="Markdown",
+                reply_markup=_account_kb() if account else _main_kb(),
+            )
+            return
+
+        if text == BTN_NEWSLETTERS:
+            await self._do_search(update, ctx, "newsletter")
+            return
+
+        if text == BTN_SORT_ACC:
+            await self.cmd_sort(update, ctx)
+            return
+
+        if text == BTN_BACK:
+            ctx.user_data.pop(CURRENT_ACCOUNT_KEY, None)
+            await update.message.reply_text(
+                "↩️ *Menu principal*\n\nSélectionnez une boîte mail :",
                 parse_mode="Markdown",
                 reply_markup=_main_kb(),
             )
             return
-        if text == BTN_NEWSLETTERS:
-            await self._do_search(update, ctx, "newsletter")
+
+        if text == BTN_SORT_ALL:
+            ctx.user_data.pop(CURRENT_ACCOUNT_KEY, None)
+            await self.cmd_sort(update, ctx)
+            return
+
+        if text == BTN_SUMMARY:
+            await self.cmd_summary(update, ctx)
+            return
+
+        if text == BTN_HELP:
+            await self.cmd_help(update, ctx)
             return
 
         # ── General AI chat ──────────────────────────────────────────────────
@@ -674,15 +802,21 @@ class MailBot:
             last_emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
             if not last_emails:
                 await msg.edit_text("📥 Récupération de vos emails en cours…")
-                last_emails = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self.manager.fetch_all_emails(max_per_account=50)
-                )
+                if account:
+                    last_emails = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self.manager.fetch_account_emails(account, max_results=50)
+                    )
+                else:
+                    last_emails = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self.manager.fetch_all_emails(max_per_account=50)
+                    )
                 ctx.bot_data[LAST_EMAILS_KEY] = last_emails
                 await msg.edit_text("💭 Réflexion en cours…")
 
             context = ""
             if last_emails:
-                lines = [f"{len(last_emails)} emails disponibles :"]
+                acc_ctx = f"Boîte active : {_ACC_LABEL.get(account, 'toutes')}\n" if account else ""
+                lines = [f"{acc_ctx}{len(last_emails)} emails disponibles :"]
                 for i, e in enumerate(last_emails):
                     lines.append(
                         f"[{i}] {e.get('account','')} | cat={e.get('category','')} imp={e.get('importance','')} "
@@ -691,9 +825,10 @@ class MailBot:
                 context = "\n".join(lines)
 
             response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.chat(text, context)
+                None, lambda: self.manager.chat(update.message.text.strip(), context)
             )
-            await msg.edit_text(response, reply_markup=_main_kb())
+            kb = _account_kb() if account else _main_kb()
+            await msg.edit_text(response, reply_markup=kb)
         except Exception as e:
             logger.error(f"handle_message error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
