@@ -28,3 +28,4 @@ logs/
 .vscode/
 .idea/
 *.swp
+railway_env.txt
