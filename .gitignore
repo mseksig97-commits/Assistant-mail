@@ -2,6 +2,9 @@
 .env
 *.env
 
+# Railway env export (contains secrets)
+railway_env.txt
+
 # Auth tokens and credentials (contain sensitive secrets)
 config/*_token.json
 config/*.flow
