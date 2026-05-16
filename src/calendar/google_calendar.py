@@ -40,7 +40,12 @@ class GoogleCalendarClient:
                 creds.refresh(Request())
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(self.credentials_file, all_scopes)
-                creds = flow.run_local_server(port=0)
+                flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+                auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+                print(f"\n[GOOGLE CALENDAR AUTH] Ouvrez cette URL :\n{auth_url}\n")
+                code = input("[GOOGLE CALENDAR AUTH] Collez le code : ").strip()
+                flow.fetch_token(code=code)
+                creds = flow.credentials
             with open(self.token_file, "w") as f:
                 f.write(creds.to_json())
 

@@ -40,13 +40,22 @@ class GmailClient:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(self.credentials_file, SCOPES)
-                creds = flow.run_local_server(port=0)
+                creds = self._headless_auth()
             with open(self.token_file, "w") as f:
                 f.write(creds.to_json())
 
         self.service = build("gmail", "v1", credentials=creds)
         logger.info("Gmail authenticated successfully")
+
+    def _headless_auth(self):
+        from google_auth_oauthlib.flow import InstalledAppFlow as Flow
+        flow = Flow.from_client_secrets_file(self.credentials_file, SCOPES)
+        flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        print(f"\n[GMAIL AUTH] Ouvrez cette URL dans votre navigateur :\n{auth_url}\n")
+        code = input("[GMAIL AUTH] Collez le code affiché par Google : ").strip()
+        flow.fetch_token(code=code)
+        return flow.credentials
 
     def list_emails(self, max_results: int = 50, query: str = "") -> list[dict]:
         try:
