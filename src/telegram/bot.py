@@ -117,6 +117,29 @@ def _current_account(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return ctx.user_data.get(CURRENT_ACCOUNT_KEY, "")
 
 
+def _short_sender(e: dict) -> str:
+    """Extract a short display name from the 'from' field."""
+    sender = e.get("from", "")
+    if "<" in sender:
+        name = sender.split("<")[0].strip().strip('"').strip()
+        if name:
+            return name[:22]
+    if "@" in sender:
+        return sender.split("@")[0][:22]
+    return sender[:22] or "?"
+
+
+def _unsub_keyboard(emails: list[dict]) -> "InlineKeyboardMarkup | None":
+    """Build an inline keyboard with one Unsubscribe button per email that has an unsubscribe link."""
+    rows = []
+    for i, e in enumerate(emails):
+        info = extract_unsubscribe(e)
+        if info["url"] or info["mailto"]:
+            label = f"🔕 [{i}] {_short_sender(e)}"[:30]
+            rows.append([InlineKeyboardButton(label, callback_data=f"unsub_{i}")])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 class MailBot:
     def __init__(self, manager: EmailManager):
         self.manager = manager
@@ -283,11 +306,14 @@ class MailBot:
 
             lines.append(_sep())
             lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre")
+            unsub_kb = _unsub_keyboard(emails[:n])
+            if unsub_kb:
+                lines.append("👇 Cliquez sur un bouton ci-dessous pour vous désabonner")
 
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:4000] + "\n…"
-            await msg.edit_text(text, parse_mode="Markdown")
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=unsub_kb)
         except Exception as e:
             logger.error(f"cmd_list_emails error: {e}")
             try:
@@ -343,12 +369,15 @@ class MailBot:
                 lines.append("")
 
             lines.append(_sep())
-            lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre • `/desabonner <n>` pour se désabonner")
+            lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre")
+            unsub_kb = _unsub_keyboard(results[:15])
+            if unsub_kb:
+                lines.append("👇 Cliquez sur un bouton ci-dessous pour vous désabonner")
 
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:4000] + "\n…"
-            await msg.edit_text(text, parse_mode="Markdown")
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=unsub_kb)
         except Exception as e:
             logger.error(f"_do_search error: {e}")
             try:
@@ -749,11 +778,14 @@ class MailBot:
 
                 lines.append(_sep())
                 lines.append("💡 `/voir <n>` pour lire • `/repondre <n>` pour répondre")
+                unsub_kb = _unsub_keyboard(emails[:15])
+                if unsub_kb:
+                    lines.append("👇 Cliquez sur un bouton ci-dessous pour vous désabonner")
 
                 text_out = "\n".join(lines)
                 if len(text_out) > 4000:
                     text_out = text_out[:4000] + "\n…"
-                await msg.edit_text(text_out, parse_mode="Markdown")
+                await msg.edit_text(text_out, parse_mode="Markdown", reply_markup=unsub_kb)
             except Exception as e:
                 logger.error(f"mailbox select error: {e}")
                 try:
