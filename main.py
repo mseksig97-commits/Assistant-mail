@@ -1,9 +1,23 @@
 import asyncio
+import base64
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Restore token files from base64 env vars (used in cloud deployments)
+def _restore_file(env_var: str, path: str):
+    data = os.getenv(env_var)
+    if data and not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(data))
+
+_restore_file("GMAIL_CREDENTIALS_B64", os.getenv("GMAIL_CREDENTIALS_FILE", "config/gmail_credentials.json"))
+_restore_file("GMAIL_TOKEN_B64",       os.getenv("GMAIL_TOKEN_FILE",        "config/gmail_token.json"))
+_restore_file("OUTLOOK1_TOKEN_B64",    os.getenv("OUTLOOK1_TOKEN_FILE",     "config/outlook1_token.json"))
+_restore_file("OUTLOOK2_TOKEN_B64",    os.getenv("OUTLOOK2_TOKEN_FILE",     "config/outlook2_token.json"))
 
 from src.utils.logger import setup_logger
 from src.agent.email_manager import EmailManager
