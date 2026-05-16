@@ -2,9 +2,10 @@
 .env
 *.env
 
-# Auth tokens (contain sensitive credentials)
+# Auth tokens and credentials (contain sensitive secrets)
 config/*_token.json
 config/*.flow
+config/gmail_credentials.json
 
 # Python
 __pycache__/
