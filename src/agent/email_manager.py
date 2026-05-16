@@ -137,13 +137,13 @@ class EmailManager:
 
     # ─── Search ──────────────────────────────────────────────────────────────
 
-    def search_emails(self, query: str) -> list[dict]:
-        results = self.gmail.list_emails(max_results=20, query=query)
-        # Outlook doesn't support free-text search in this client — fetch and filter locally
+    def search_emails(self, query: str, max_results: int = 20) -> list[dict]:
+        results = self.gmail.list_emails(max_results=max_results, query=query)
+        q = query.lower()
         for client in [self.outlook1, self.outlook2]:
-            for email in client.list_emails(max_results=50):
-                text = f"{email['subject']} {email['from']} {email['snippet']}".lower()
-                if query.lower() in text:
+            for email in client.list_emails(max_results=100):
+                text = f"{email['subject']} {email['from']} {email.get('body','')} {email.get('snippet','')}".lower()
+                if q in text:
                     results.append(email)
         return results
 

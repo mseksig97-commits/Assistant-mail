@@ -48,6 +48,7 @@ class MailBot:
         self.app.add_handler(CommandHandler("emails", self.cmd_list_emails))
         self.app.add_handler(CommandHandler("recherche", self.cmd_search))
         self.app.add_handler(CommandHandler("repondre", self.cmd_reply))
+        self.app.add_handler(CommandHandler("voir", self.cmd_view_email))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
@@ -77,9 +78,10 @@ class MailBot:
             "📖 *Commandes disponibles*\n\n"
             "/trier — Analyse et classe tous vos emails (Gmail + 2×Outlook)\n"
             "/resume — Génère le résumé quotidien\n"
-            "/emails [n] — Liste les n derniers emails importants (défaut: 10)\n"
-            "/recherche <terme> — Recherche dans vos emails\n"
-            "/repondre <id_email> — Rédige une réponse avec IA\n"
+            "/emails [n] — Liste les n derniers emails (défaut: 10)\n"
+            "/recherche <terme> — 🔍 Recherche dans vos emails\n"
+            "/voir <n> — Lire un email complet\n"
+            "/repondre <n> — Rédige une réponse avec IA\n"
             "/aide — Cette aide\n\n"
             "💬 Écrivez librement pour poser des questions ou donner des instructions.",
             parse_mode="Markdown",
@@ -177,7 +179,13 @@ class MailBot:
             await update.message.reply_text(_unauthorized_msg())
             return
         if not ctx.args:
-            await update.message.reply_text("Usage : /recherche <terme>")
+            await update.message.reply_text(
+                "Usage : /recherche <terme>\n"
+                "Exemples :\n"
+                "  /recherche facture\n"
+                "  /recherche newsletter\n"
+                "  /recherche jean@example.com"
+            )
             return
         query = " ".join(ctx.args)
         msg = await update.message.reply_text(f"🔍 Recherche de « {query} »...")
@@ -186,15 +194,71 @@ class MailBot:
                 None, lambda: self.manager.search_emails(query)
             )
             if not results:
-                await msg.edit_text("Aucun email trouvé.")
+                await msg.edit_text(f"🔍 Aucun email trouvé pour « {query} ».")
                 return
+
+            ctx.bot_data[LAST_EMAILS_KEY] = results
+            acc_icon = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}
             lines = [f"🔍 *{len(results)} résultat(s) pour « {query} »*\n"]
-            for i, e in enumerate(results[:10]):
-                lines.append(f"`[{i}]` *{e.get('subject','')[:50]}* — {e.get('from','')[:30]}")
-            await msg.edit_text("\n".join(lines), parse_mode="Markdown")
+            for i, e in enumerate(results[:15]):
+                icon = acc_icon.get(e.get("account", ""), "✉️")
+                subj = e.get("subject", "(sans sujet)")[:50]
+                sender = e.get("from", "")[:35]
+                snippet = e.get("snippet", "")[:60]
+                lines.append(
+                    f"{icon} `[{i}]` *{subj}*\n"
+                    f"    👤 {sender}\n"
+                    f"    _{snippet}_\n"
+                )
+
+            lines.append("💡 `/voir <n>` pour lire un email • `/repondre <n>` pour répondre")
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:4000] + "\n…"
+            await msg.edit_text(text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"cmd_search error: {e}")
             await msg.edit_text(f"❌ Erreur : {e}")
+
+    async def cmd_view_email(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not _allowed(update):
+            await update.message.reply_text(_unauthorized_msg())
+            return
+        emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+        if not ctx.args or not ctx.args[0].isdigit():
+            await update.message.reply_text("Usage : /voir <index>\nUtilisez /emails ou /recherche d'abord.")
+            return
+        idx = int(ctx.args[0])
+        if idx >= len(emails):
+            await update.message.reply_text(f"Index invalide. Max : {len(emails)-1}")
+            return
+
+        e = emails[idx]
+        acc_icon = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}.get(e.get("account", ""), "✉️")
+        body = e.get("body", e.get("snippet", "(pas de contenu)"))
+        body_preview = body[:800] + ("…" if len(body) > 800 else "")
+
+        text = (
+            f"{acc_icon} *Email [{idx}]*\n"
+            f"*De :* {e.get('from','')}\n"
+            f"*À :* {e.get('to','')}\n"
+            f"*Date :* {e.get('date','')}\n"
+            f"*Sujet :* {e.get('subject','')}\n"
+        )
+        if e.get("category"):
+            text += f"*Catégorie :* {e.get('category')} | *Importance :* {e.get('importance','?')}/5\n"
+        text += f"\n{body_preview}"
+
+        keyboard = [[
+            InlineKeyboardButton("✏️ Répondre", callback_data=f"reply_{idx}"),
+        ]]
+        if len(text) > 4000:
+            text = text[:4000] + "\n…"
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
 
     async def cmd_reply(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not _allowed(update):
@@ -267,6 +331,33 @@ class MailBot:
         elif data == "cancel_reply":
             ctx.bot_data.pop(PENDING_REPLY_KEY, None)
             await query.edit_message_text("❌ Réponse annulée.")
+
+        elif data.startswith("reply_"):
+            idx = int(data.split("_")[1])
+            emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+            if idx >= len(emails):
+                await query.edit_message_text("❌ Email introuvable.")
+                return
+            email = emails[idx]
+            await query.edit_message_text("⏳ Rédaction de la réponse...")
+            try:
+                draft = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.draft_reply(email, "")
+                )
+                ctx.bot_data[PENDING_REPLY_KEY] = {"email": email, "draft": draft}
+                keyboard = [[
+                    InlineKeyboardButton("✅ Envoyer", callback_data="send_reply"),
+                    InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
+                    InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
+                ]]
+                await query.edit_message_text(
+                    f"📝 *Brouillon à :* {email.get('from','')}\n"
+                    f"*Sujet :* Re: {email.get('subject','')}\n\n---\n{draft}\n---",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                await query.edit_message_text(f"❌ Erreur : {e}")
 
     # ─── Free text handler ───────────────────────────────────────────────────
 
