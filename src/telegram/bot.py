@@ -307,12 +307,26 @@ class MailBot:
         # General chat
         msg = await update.message.reply_text("💭 Réflexion en cours...")
         try:
-            # Build context from last emails if available
-            context = ""
             last_emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+            if not last_emails:
+                await msg.edit_text("📥 Récupération de vos emails en cours...")
+                last_emails = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.fetch_all_emails(max_per_account=50)
+                )
+                ctx.bot_data[LAST_EMAILS_KEY] = last_emails
+                await msg.edit_text("💭 Réflexion en cours...")
+
+            context = ""
             if last_emails:
-                context = f"Derniers emails récupérés : {len(last_emails)} emails. " \
-                          f"Sujets : {', '.join(e.get('subject','') for e in last_emails[:5])}"
+                lines = [f"{len(last_emails)} emails disponibles :"]
+                for i, e in enumerate(last_emails):
+                    cat = e.get("category", "")
+                    imp = e.get("importance", "")
+                    subj = e.get("subject", "(sans sujet)")
+                    sender = e.get("from", "")[:40]
+                    acc = e.get("account", "")
+                    lines.append(f"[{i}] {acc} | cat={cat} imp={imp} | De: {sender} | Sujet: {subj}")
+                context = "\n".join(lines)
 
             response = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.chat(text, context)
