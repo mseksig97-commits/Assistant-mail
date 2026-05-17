@@ -1,7 +1,8 @@
 import os
 import asyncio
+import tempfile
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,6 +22,8 @@ PENDING_REPLY_KEY = "pending_reply"
 LAST_EMAILS_KEY = "last_emails"
 CURRENT_ACCOUNT_KEY = "current_account"
 NAV_MSG_KEY = "nav_msg_id"
+CHAT_HISTORY_KEY = "chat_history"
+MAX_HISTORY = 20  # max stored messages (10 turns)
 
 _ACC_ICON = {"gmail": "📧", "outlook1": "📨", "outlook2": "📩"}
 _ACC_LABEL = {"gmail": "Gmail", "outlook1": "Outlook 1", "outlook2": "Outlook 2"}
@@ -143,6 +146,27 @@ def _current_account(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return ctx.user_data.get(CURRENT_ACCOUNT_KEY, "")
 
 
+def _get_history(ctx: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    return list(ctx.chat_data.get(CHAT_HISTORY_KEY, []))
+
+
+def _add_to_history(ctx: ContextTypes.DEFAULT_TYPE, role: str, content: str):
+    history = ctx.chat_data.get(CHAT_HISTORY_KEY, [])
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_HISTORY:
+        history = history[-MAX_HISTORY:]
+    ctx.chat_data[CHAT_HISTORY_KEY] = history
+
+
+def _transcribe_voice(file_path: str) -> str:
+    """Transcribe a voice file using OpenAI Whisper."""
+    import openai
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    with open(file_path, "rb") as f:
+        transcript = client.audio.transcriptions.create(model="whisper-1", file=f)
+    return transcript.text
+
+
 class MailBot:
     def __init__(self, manager: EmailManager):
         self.manager = manager
@@ -161,6 +185,7 @@ class MailBot:
         self.app.add_handler(CommandHandler("voir", self.cmd_view_email))
         self.app.add_handler(CommandHandler("desabonner", self.cmd_unsubscribe))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
+        self.app.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     # ─── Nav message helpers ──────────────────────────────────────────────────
@@ -183,23 +208,8 @@ class MailBot:
         )
         ctx.chat_data[NAV_MSG_KEY] = msg.message_id
 
-    async def _nav_loading(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE, text: str):
-        """Edit nav message to a loading state (no keyboard)."""
-        nav_id = ctx.chat_data.get(NAV_MSG_KEY)
-        if nav_id:
-            try:
-                await ctx.bot.edit_message_text(
-                    chat_id=chat_id, message_id=nav_id,
-                    text=text, parse_mode="Markdown",
-                )
-                return
-            except Exception:
-                pass
-        msg = await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-        ctx.chat_data[NAV_MSG_KEY] = msg.message_id
-
     async def _restore_nav(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE):
-        """Restore nav message to the appropriate keyboard for the current state."""
+        """Restore the nav message to the current menu state."""
         account = ctx.user_data.get(CURRENT_ACCOUNT_KEY, "")
         if account:
             acc_icon = _ACC_ICON[account]
@@ -207,6 +217,19 @@ class MailBot:
             await self._set_nav(chat_id, ctx, f"{acc_icon} *{acc_label}* — Menu", _account_kb())
         else:
             await self._set_nav(chat_id, ctx, "📬 *Assistant Email* — Menu principal", _main_kb())
+
+    # ─── Ephemeral loading message helpers ────────────────────────────────────
+
+    async def _show_loading(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE, text: str) -> Message:
+        """Send a temporary loading message (visible, then deleted once done)."""
+        return await ctx.bot.send_message(chat_id=chat_id, text=text)
+
+    async def _hide_loading(self, msg: Message):
+        """Delete the loading message."""
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
     # ─── Commands ────────────────────────────────────────────────────────────
 
@@ -216,12 +239,14 @@ class MailBot:
             return
         ctx.user_data.pop(CURRENT_ACCOUNT_KEY, None)
         ctx.chat_data.pop(NAV_MSG_KEY, None)
+        ctx.chat_data.pop(CHAT_HISTORY_KEY, None)
         await self._set_nav(
             update.effective_chat.id, ctx,
             "👋 *Bonjour ! Je suis votre assistant email IA.*\n"
             f"{_sep()}\n\n"
             "📬 Sélectionnez une boîte mail pour commencer,\n"
-            "ou utilisez les actions globales ci-dessous.",
+            "ou utilisez les actions globales ci-dessous.\n\n"
+            "🎤 Vous pouvez aussi m'envoyer des messages vocaux !",
             _main_kb(),
         )
 
@@ -246,6 +271,7 @@ class MailBot:
             "`/repondre <n>` — Rédiger une réponse IA\n"
             "`/desabonner <n>` — Se désabonner\n"
             "`/recherche <terme>` — Recherche avancée\n\n"
+            "🎤 Envoyez un message vocal pour parler à l'assistant\n"
             "💬 Écrivez librement pour poser des questions !",
             parse_mode="Markdown",
         )
@@ -256,7 +282,7 @@ class MailBot:
         chat_id = update.effective_chat.id
         account = _current_account(ctx)
         acc_label = f"{_ACC_ICON.get(account, '')} {_ACC_LABEL.get(account, '')}" if account else "tous les comptes"
-        await self._nav_loading(chat_id, ctx, f"⏳ Analyse de *{acc_label}* en cours… (1-2 min)")
+        loading = await self._show_loading(chat_id, ctx, f"⏳ Analyse de *{acc_label}* en cours… (1-2 min)")
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.analyze_and_sort(30)
@@ -276,9 +302,11 @@ class MailBot:
             if events_count:
                 lines.append("")
                 lines.append(f"📅 *{events_count}* événement(s) ajouté(s) au calendrier")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"cmd_sort error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur lors du tri : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -287,11 +315,12 @@ class MailBot:
         if not _allowed(update):
             return
         chat_id = update.effective_chat.id
-        await self._nav_loading(chat_id, ctx, "⏳ Génération du résumé en cours…")
+        loading = await self._show_loading(chat_id, ctx, "⏳ Génération du résumé en cours…")
         try:
             summary = await asyncio.get_event_loop().run_in_executor(
                 None, self.manager.generate_daily_summary
             )
+            await self._hide_loading(loading)
             if len(summary) <= 4096:
                 await ctx.bot.send_message(chat_id=chat_id, text=summary)
             else:
@@ -299,6 +328,7 @@ class MailBot:
                     await ctx.bot.send_message(chat_id=chat_id, text=chunk)
         except Exception as e:
             logger.error(f"cmd_summary error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -311,7 +341,7 @@ class MailBot:
         n = int(args[0]) if args and args[0].isdigit() else 15
         account = _current_account(ctx)
         acc_label = f"{_ACC_ICON.get(account, '')} {_ACC_LABEL.get(account, '')}" if account else "tous les comptes"
-        await self._nav_loading(chat_id, ctx, f"⏳ Récupération des emails — *{acc_label}*…")
+        loading = await self._show_loading(chat_id, ctx, f"⏳ Récupération des emails — *{acc_label}*…")
         try:
             if account:
                 emails = await asyncio.get_event_loop().run_in_executor(
@@ -334,9 +364,11 @@ class MailBot:
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:4000] + "\n…"
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=unsub_kb)
         except Exception as e:
             logger.error(f"cmd_list_emails error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -364,11 +396,12 @@ class MailBot:
     async def _do_search(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE, query: str):
         account = _current_account(ctx)
         acc_label = f" dans {_ACC_ICON.get(account, '')} {_ACC_LABEL.get(account, '')}" if account else ""
-        await self._nav_loading(chat_id, ctx, f"🔍 Recherche de « {query} »{acc_label}…")
+        loading = await self._show_loading(chat_id, ctx, f"🔍 Recherche de « {query} »{acc_label}…")
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.search_emails(query, account=account)
             )
+            await self._hide_loading(loading)
             if not results:
                 await ctx.bot.send_message(
                     chat_id=chat_id,
@@ -392,6 +425,7 @@ class MailBot:
                 await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=unsub_kb)
         except Exception as e:
             logger.error(f"_do_search error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -460,7 +494,7 @@ class MailBot:
         email = emails[idx]
         instructions = " ".join(ctx.args[1:]) if len(ctx.args) > 1 else ""
         chat_id = update.effective_chat.id
-        await self._nav_loading(chat_id, ctx, "⏳ Rédaction de la réponse…")
+        loading = await self._show_loading(chat_id, ctx, "⏳ Rédaction de la réponse…")
         try:
             draft = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.draft_reply(email, instructions)
@@ -471,6 +505,7 @@ class MailBot:
                 InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
                 InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
             ]]
+            await self._hide_loading(loading)
             await ctx.bot.send_message(
                 chat_id=chat_id,
                 text=(
@@ -484,6 +519,7 @@ class MailBot:
             )
         except Exception as e:
             logger.error(f"cmd_reply error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -536,6 +572,52 @@ class MailBot:
             parse_mode="Markdown",
         )
 
+    # ─── Voice handler ────────────────────────────────────────────────────────
+
+    async def handle_voice(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not _allowed(update):
+            return
+        chat_id = update.effective_chat.id
+
+        if not os.getenv("OPENAI_API_KEY"):
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ La transcription vocale nécessite la variable `OPENAI_API_KEY`.",
+            )
+            return
+
+        loading = await self._show_loading(chat_id, ctx, "🎤 Transcription en cours…")
+        tmp_path = None
+        try:
+            voice = update.message.voice
+            tg_file = await ctx.bot.get_file(voice.file_id)
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+                tmp_path = tmp.name
+            await tg_file.download_to_drive(tmp_path)
+
+            text = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: _transcribe_voice(tmp_path)
+            )
+            await self._hide_loading(loading)
+            loading = None
+
+            # Echo the transcription so the user knows what was understood
+            await ctx.bot.send_message(
+                chat_id=chat_id, text=f"🎤 _{text}_", parse_mode="Markdown"
+            )
+
+            # Process as a regular chat message
+            await self._process_chat(chat_id, ctx, text)
+
+        except Exception as e:
+            logger.error(f"handle_voice error: {e}")
+            if loading:
+                await self._hide_loading(loading)
+            await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur de transcription : {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     # ─── Callback handler ─────────────────────────────────────────────────────
 
     async def handle_callback(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -552,7 +634,8 @@ class MailBot:
             ctx.user_data[CURRENT_ACCOUNT_KEY] = account
             acc_icon = _ACC_ICON[account]
             acc_label = _ACC_LABEL[account]
-            await self._set_nav(chat_id, ctx, f"⏳ *{acc_label}* — Récupération des emails…", _account_kb())
+            await self._set_nav(chat_id, ctx, f"{acc_icon} *{acc_label}* — Menu", _account_kb())
+            loading = await self._show_loading(chat_id, ctx, f"⏳ Récupération des emails *{acc_label}*…")
             try:
                 emails = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.fetch_account_emails(account, max_results=15)
@@ -570,12 +653,12 @@ class MailBot:
                 text_out = "\n".join(lines)
                 if len(text_out) > 4000:
                     text_out = text_out[:4000] + "\n…"
+                await self._hide_loading(loading)
                 await ctx.bot.send_message(chat_id=chat_id, text=text_out, parse_mode="Markdown", reply_markup=unsub_kb)
             except Exception as e:
                 logger.error(f"nav account error: {e}")
+                await self._hide_loading(loading)
                 await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
-            finally:
-                await self._set_nav(chat_id, ctx, f"{acc_icon} *{acc_label}* — Menu", _account_kb())
             return
 
         if data == CB_NAV_BACK:
@@ -634,6 +717,7 @@ class MailBot:
                     "`/repondre <n>` — Rédiger une réponse IA\n"
                     "`/desabonner <n>` — Se désabonner\n"
                     "`/recherche <terme>` — Recherche avancée\n\n"
+                    "🎤 Envoyez un message vocal pour parler à l'assistant\n"
                     "💬 Écrivez librement pour poser des questions !"
                 ),
                 parse_mode="Markdown",
@@ -790,7 +874,7 @@ class MailBot:
     async def _cb_list_emails(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE):
         account = _current_account(ctx)
         acc_label = f"{_ACC_ICON.get(account, '')} {_ACC_LABEL.get(account, '')}" if account else "tous les comptes"
-        await self._nav_loading(chat_id, ctx, f"⏳ Récupération des emails — *{acc_label}*…")
+        loading = await self._show_loading(chat_id, ctx, f"⏳ Récupération des emails — *{acc_label}*…")
         try:
             if account:
                 emails = await asyncio.get_event_loop().run_in_executor(
@@ -813,9 +897,11 @@ class MailBot:
             text = "\n".join(lines)
             if len(text) > 4000:
                 text = text[:4000] + "\n…"
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=unsub_kb)
         except Exception as e:
             logger.error(f"_cb_list_emails error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -823,7 +909,7 @@ class MailBot:
     async def _cb_sort(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE):
         account = _current_account(ctx)
         acc_label = f"{_ACC_ICON.get(account, '')} {_ACC_LABEL.get(account, '')}" if account else "tous les comptes"
-        await self._nav_loading(chat_id, ctx, f"⏳ Analyse de *{acc_label}* en cours… (1-2 min)")
+        loading = await self._show_loading(chat_id, ctx, f"⏳ Analyse de *{acc_label}* en cours… (1-2 min)")
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.analyze_and_sort(30)
@@ -843,19 +929,22 @@ class MailBot:
             if events_count:
                 lines.append("")
                 lines.append(f"📅 *{events_count}* événement(s) ajouté(s) au calendrier")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
         except Exception as e:
             logger.error(f"_cb_sort error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur lors du tri : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
 
     async def _cb_summary(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE):
-        await self._nav_loading(chat_id, ctx, "⏳ Génération du résumé en cours…")
+        loading = await self._show_loading(chat_id, ctx, "⏳ Génération du résumé en cours…")
         try:
             summary = await asyncio.get_event_loop().run_in_executor(
                 None, self.manager.generate_daily_summary
             )
+            await self._hide_loading(loading)
             if len(summary) <= 4096:
                 await ctx.bot.send_message(chat_id=chat_id, text=summary)
             else:
@@ -863,6 +952,55 @@ class MailBot:
                     await ctx.bot.send_message(chat_id=chat_id, text=chunk)
         except Exception as e:
             logger.error(f"_cb_summary error: {e}")
+            await self._hide_loading(loading)
+            await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
+        finally:
+            await self._restore_nav(chat_id, ctx)
+
+    # ─── Chat processing (shared by text and voice) ───────────────────────────
+
+    async def _process_chat(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE, text: str):
+        account = _current_account(ctx)
+        loading = await self._show_loading(chat_id, ctx, "💭 Réflexion en cours…")
+        try:
+            last_emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
+            if not last_emails:
+                await loading.edit_text("📥 Récupération de vos emails…")
+                if account:
+                    last_emails = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self.manager.fetch_account_emails(account, max_results=50)
+                    )
+                else:
+                    last_emails = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self.manager.fetch_all_emails(max_per_account=50)
+                    )
+                ctx.bot_data[LAST_EMAILS_KEY] = last_emails
+
+            context = ""
+            if last_emails:
+                acc_ctx = f"Boîte active : {_ACC_LABEL.get(account, 'toutes')}\n" if account else ""
+                lines = [f"{acc_ctx}{len(last_emails)} emails disponibles :"]
+                for i, e in enumerate(last_emails):
+                    lines.append(
+                        f"[{i}] {e.get('account', '')} | cat={e.get('category', '')} "
+                        f"imp={e.get('importance', '')} "
+                        f"| De: {e.get('from', '')[:40]} | Sujet: {e.get('subject', '')}"
+                    )
+                context = "\n".join(lines)
+
+            history = _get_history(ctx)
+            response = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.manager.chat(text, context, history)
+            )
+            # Store the exchange in memory
+            _add_to_history(ctx, "user", text)
+            _add_to_history(ctx, "assistant", response)
+
+            await self._hide_loading(loading)
+            await ctx.bot.send_message(chat_id=chat_id, text=response)
+        except Exception as e:
+            logger.error(f"_process_chat error: {e}")
+            await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)
@@ -883,7 +1021,7 @@ class MailBot:
             if not pending:
                 await update.message.reply_text("Aucun brouillon en cours.")
                 return
-            await self._nav_loading(chat_id, ctx, "⏳ Régénération du brouillon…")
+            loading = await self._show_loading(chat_id, ctx, "⏳ Régénération du brouillon…")
             try:
                 draft = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: self.manager.draft_reply(pending["email"], text)
@@ -894,6 +1032,7 @@ class MailBot:
                     InlineKeyboardButton("✏️ Modifier", callback_data="edit_reply"),
                     InlineKeyboardButton("❌ Annuler", callback_data="cancel_reply"),
                 ]]
+                await self._hide_loading(loading)
                 await ctx.bot.send_message(
                     chat_id=chat_id,
                     text=f"📝 *Nouveau brouillon :*\n{_sep()}\n\n{draft}\n\n{_sep()}",
@@ -901,6 +1040,7 @@ class MailBot:
                     parse_mode="Markdown",
                 )
             except Exception as e:
+                await self._hide_loading(loading)
                 await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
             finally:
                 await self._restore_nav(chat_id, ctx)
@@ -913,43 +1053,7 @@ class MailBot:
             return
 
         # ── General AI chat ──────────────────────────────────────────────────
-        account = _current_account(ctx)
-        await self._nav_loading(chat_id, ctx, "💭 Réflexion en cours…")
-        try:
-            last_emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
-            if not last_emails:
-                await self._nav_loading(chat_id, ctx, "📥 Récupération de vos emails en cours…")
-                if account:
-                    last_emails = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: self.manager.fetch_account_emails(account, max_results=50)
-                    )
-                else:
-                    last_emails = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: self.manager.fetch_all_emails(max_per_account=50)
-                    )
-                ctx.bot_data[LAST_EMAILS_KEY] = last_emails
-                await self._nav_loading(chat_id, ctx, "💭 Réflexion en cours…")
-
-            context = ""
-            if last_emails:
-                acc_ctx = f"Boîte active : {_ACC_LABEL.get(account, 'toutes')}\n" if account else ""
-                lines = [f"{acc_ctx}{len(last_emails)} emails disponibles :"]
-                for i, e in enumerate(last_emails):
-                    lines.append(
-                        f"[{i}] {e.get('account', '')} | cat={e.get('category', '')} imp={e.get('importance', '')} "
-                        f"| De: {e.get('from', '')[:40]} | Sujet: {e.get('subject', '')}"
-                    )
-                context = "\n".join(lines)
-
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.chat(text, context)
-            )
-            await ctx.bot.send_message(chat_id=chat_id, text=response)
-        except Exception as e:
-            logger.error(f"handle_message error: {e}")
-            await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
-        finally:
-            await self._restore_nav(chat_id, ctx)
+        await self._process_chat(chat_id, ctx, text)
 
     # ─── Run ─────────────────────────────────────────────────────────────────
 

@@ -166,5 +166,5 @@ class EmailManager:
 
     # ─── Chat passthrough ─────────────────────────────────────────────────────
 
-    def chat(self, message: str, context: str = "") -> str:
-        return self.ai.chat(message, context)
+    def chat(self, message: str, context: str = "", history: list[dict] | None = None) -> str:
+        return self.ai.chat(message, context, history)

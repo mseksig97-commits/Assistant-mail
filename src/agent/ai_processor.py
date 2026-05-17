@@ -32,18 +32,13 @@ class AIProcessor:
         return msg.content[0].text.strip()
 
     def _call_json(self, prompt: str, max_tokens: int = 2000) -> dict:
-        """Call the model with JSON prefill to guarantee clean JSON output."""
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
-            messages=[
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": "{"},
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
-        raw = "{" + msg.content[0].text.strip()
-        # Fallback: strip markdown fences if the model still wrapped the output
+        raw = msg.content[0].text.strip()
         raw = re.sub(r'^```(?:json)?\s*\n?', '', raw).rstrip('`').strip()
         return json.loads(raw)
 
@@ -133,9 +128,15 @@ Emails analysés :
             logger.error(f"daily_summary error: {e}")
             return "Erreur lors de la génération du résumé."
 
-    def chat(self, user_message: str, context: str = "") -> str:
-        """General conversational response for Telegram messages."""
-        prompt = f"""{f"Contexte : {context}" + chr(10) if context else ""}Question/demande : {user_message}"""
+    def chat(self, user_message: str, context: str = "", history: list[dict] | None = None) -> str:
+        """General conversational response, with optional multi-turn history."""
+        messages = list(history) if history else []
+
+        content = user_message
+        if context:
+            content = f"Contexte des emails disponibles :\n{context}\n\nMessage : {user_message}"
+        messages.append({"role": "user", "content": content})
+
         try:
             msg = self.client.messages.create(
                 model=self.model,
@@ -143,9 +144,10 @@ Emails analysés :
                 system=(
                     "Tu es un assistant IA de gestion des emails. Tu peux répondre aux questions "
                     "sur les emails, aider à rédiger des messages, et effectuer des actions de gestion. "
+                    "Tu te souviens des échanges précédents dans la conversation. "
                     "Réponds en français, de manière concise et utile."
                 ),
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
             )
             return msg.content[0].text.strip()
         except Exception as e:
