@@ -21,16 +21,20 @@ def setup_gmail():
 
 
 def setup_outlook(account_num: int):
-    print(f"\n=== Outlook Account {account_num} OAuth2 ===")
+    print(f"\n=== Outlook Account {account_num} — Device Code Flow ===")
     from src.email.outlook_client import OutlookClient
     client = OutlookClient(account_num)
 
-    print(f"Visit this URL to authorize Outlook account {account_num}:")
-    url = client.get_auth_url()
-    print(f"\n{url}\n")
+    flow = client.initiate_device_flow()
+    if "user_code" not in flow:
+        print(f"✗ Failed to start device flow: {flow.get('error_description', flow)}")
+        sys.exit(1)
 
-    redirect = input("Paste the full redirect URL after authorization: ").strip()
-    if client.complete_auth(redirect):
+    print(f"\n1. Go to: {flow['verification_uri']}")
+    print(f"2. Enter code: {flow['user_code']}")
+    print("\nWaiting for authorization (this will block until you complete the above steps)…")
+
+    if client.complete_device_flow():
         print(f"✓ Outlook account {account_num} authenticated successfully")
     else:
         print(f"✗ Authentication failed for Outlook account {account_num}")

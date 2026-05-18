@@ -11,9 +11,9 @@ logger = setup_logger("outlook_client")
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 SCOPES = [
-    "https://graph.microsoft.com/Mail.ReadWrite",
-    "https://graph.microsoft.com/Mail.Send",
-    "https://graph.microsoft.com/Calendars.ReadWrite",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "Calendars.ReadWrite",
 ]
 
 
@@ -21,7 +21,7 @@ class OutlookClient:
     def __init__(self, account_num: int):
         prefix = f"OUTLOOK{account_num}_"
         self.client_id = os.getenv(f"{prefix}CLIENT_ID")
-        self.tenant_id = os.getenv(f"{prefix}TENANT_ID", "consumers")
+        self.tenant_id = os.getenv(f"{prefix}TENANT_ID", "common")
         self.email = os.getenv(f"{prefix}EMAIL")
         self.token_file = os.getenv(f"{prefix}TOKEN_FILE", f"config/outlook{account_num}_token.json")
         self.account_label = f"outlook{account_num}"
@@ -178,19 +178,23 @@ class OutlookClient:
             return False
 
     def _get_or_create_folder(self, name: str, headers: dict) -> str:
-        r = requests.get(f"{GRAPH_BASE}/me/mailFolders", headers=headers, timeout=30)
-        r.raise_for_status()
-        for folder in r.json().get("value", []):
-            if folder["displayName"].lower() == name.lower():
-                return folder["id"]
-        r2 = requests.post(
-            f"{GRAPH_BASE}/me/mailFolders",
-            headers=headers,
-            json={"displayName": name},
-            timeout=30,
-        )
-        r2.raise_for_status()
-        return r2.json()["id"]
+        try:
+            r = requests.get(f"{GRAPH_BASE}/me/mailFolders", headers=headers, timeout=30)
+            r.raise_for_status()
+            for folder in r.json().get("value", []):
+                if folder["displayName"].lower() == name.lower():
+                    return folder["id"]
+            r2 = requests.post(
+                f"{GRAPH_BASE}/me/mailFolders",
+                headers=headers,
+                json={"displayName": name},
+                timeout=30,
+            )
+            r2.raise_for_status()
+            return r2.json()["id"]
+        except Exception as e:
+            logger.error(f"Outlook _get_or_create_folder error: {e}")
+            raise
 
     def create_calendar_event(self, title: str, start: str, end: str, description: str = "") -> bool:
         headers = self._headers()
