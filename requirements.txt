@@ -4,6 +4,7 @@ python-telegram-bot==21.6
 # AI / LLM
 anthropic>=0.40.0
 openai>=1.0.0
+groq>=0.9.0
 
 # Email - Gmail
 google-auth==2.35.0

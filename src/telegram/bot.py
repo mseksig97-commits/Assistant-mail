@@ -159,12 +159,27 @@ def _add_to_history(ctx: ContextTypes.DEFAULT_TYPE, role: str, content: str):
 
 
 def _transcribe_voice(file_path: str) -> str:
-    """Transcribe a voice file using OpenAI Whisper."""
-    import openai
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    with open(file_path, "rb") as f:
-        transcript = client.audio.transcriptions.create(model="whisper-1", file=f)
-    return transcript.text
+    """Transcribe a voice file. Tries Groq (free) first, falls back to OpenAI."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if groq_key:
+        import groq as groq_sdk
+        client = groq_sdk.Groq(api_key=groq_key)
+        with open(file_path, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-large-v3-turbo", file=f, response_format="text"
+            )
+        return transcript if isinstance(transcript, str) else transcript.text
+
+    if openai_key:
+        import openai
+        client = openai.OpenAI(api_key=openai_key)
+        with open(file_path, "rb") as f:
+            transcript = client.audio.transcriptions.create(model="whisper-1", file=f)
+        return transcript.text
+
+    raise RuntimeError("Aucune clé API de transcription trouvée (GROQ_API_KEY ou OPENAI_API_KEY)")
 
 
 class MailBot:
@@ -579,10 +594,10 @@ class MailBot:
             return
         chat_id = update.effective_chat.id
 
-        if not os.getenv("OPENAI_API_KEY"):
+        if not os.getenv("GROQ_API_KEY") and not os.getenv("OPENAI_API_KEY"):
             await ctx.bot.send_message(
                 chat_id=chat_id,
-                text="⚠️ La transcription vocale nécessite la variable `OPENAI_API_KEY`.",
+                text="⚠️ La transcription vocale nécessite `GROQ_API_KEY` (gratuit) ou `OPENAI_API_KEY`.",
             )
             return
 
