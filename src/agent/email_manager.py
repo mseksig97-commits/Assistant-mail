@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime
 from typing import Optional
 from dateutil import parser as dateparser
@@ -33,9 +34,11 @@ class EmailManager:
         self.outlook2 = OutlookClient(2)
         self.gcal = GoogleCalendarClient()
 
-        # Use Outlook account 1 for calendar by default (configurable)
         cal_account = int(os.getenv("OUTLOOK_CALENDAR_ACCOUNT", "1"))
         self.outlook_cal = self.outlook1 if cal_account == 1 else self.outlook2
+
+        # Events waiting for user confirmation: {ev_id: event_data}
+        self.pending_events: dict[str, dict] = {}
 
     def _all_clients(self):
         return [self.gmail, self.outlook1, self.outlook2]
@@ -53,14 +56,15 @@ class EmailManager:
     # ─── Analysis & sorting ──────────────────────────────────────────────────
 
     def analyze_and_sort(self, max_per_account: int = 30) -> list[dict]:
-        """Fetch, analyze and label all emails. Returns enriched list."""
+        """Fetch, analyze and label all emails. Returns enriched list.
+        Detected calendar events are added to self.pending_events for confirmation."""
         emails = self.fetch_all_emails(max_per_account)
         results = []
         for email in emails:
             analysis = self.ai.analyze_email(email)
             enriched = {**email, **analysis}
             self._apply_label_to_email(enriched)
-            self._handle_calendar_events(enriched)
+            self._collect_calendar_events(enriched)
             results.append(enriched)
             logger.info(
                 f"[{email['account']}] '{email['subject'][:50]}' → "
@@ -82,23 +86,73 @@ class EmailManager:
         except Exception as e:
             logger.warning(f"Label apply failed for {email.get('id')}: {e}")
 
-    def _handle_calendar_events(self, email: dict):
+    def _collect_calendar_events(self, email: dict):
+        """Parse events from an email and queue them in pending_events.
+        Skips events already pending (same title + same day)."""
         for event in email.get("events", []):
             try:
                 start_str = event.get("date", "")
                 if not start_str:
                     continue
-                all_day = event.get("all_day", False)
                 start_dt = dateparser.parse(start_str)
+                if not start_dt:
+                    continue
                 end_dt = dateparser.parse(event["end_date"]) if event.get("end_date") else None
-
                 title = event.get("title", email.get("subject", "Événement"))
-                desc = f"Extrait de l'email : {email.get('subject')}\nDe : {email.get('from')}\n\n{event.get('description', '')}"
+                desc = (
+                    f"Extrait de l'email : {email.get('subject')}\n"
+                    f"De : {email.get('from')}\n\n"
+                    f"{event.get('description', '')}"
+                )
 
-                self.gcal.create_event(title, start_dt, end_dt, desc, all_day)
-                logger.info(f"Calendar event created: {title}")
+                # Deduplicate pending events (same title + same day)
+                already_pending = any(
+                    pev["title"].lower() == title.lower()
+                    and pev["start_dt"].date() == start_dt.date()
+                    for pev in self.pending_events.values()
+                )
+                if already_pending:
+                    logger.info(f"Event already pending, skipping: {title}")
+                    continue
+
+                ev_id = uuid.uuid4().hex[:8]
+                self.pending_events[ev_id] = {
+                    "title": title,
+                    "start_dt": start_dt,
+                    "end_dt": end_dt,
+                    "all_day": event.get("all_day", False),
+                    "description": desc,
+                    "email_subject": email.get("subject", ""),
+                    "email_from": email.get("from", ""),
+                }
+                logger.info(f"Event queued for confirmation: {title} ({ev_id})")
             except Exception as e:
-                logger.warning(f"Calendar event creation failed: {e}")
+                logger.warning(f"Event collect failed: {e}")
+
+    def get_pending_events(self) -> list[tuple[str, dict]]:
+        """Return all pending events as (ev_id, ev_data) pairs without clearing."""
+        return list(self.pending_events.items())
+
+    def confirm_event(self, ev_id: str) -> str:
+        """Confirm and create a pending event after dedup check.
+        Returns: 'created' | 'duplicate' | 'not_found' | 'error'"""
+        ev = self.pending_events.pop(ev_id, None)
+        if not ev:
+            return "not_found"
+        try:
+            if self.gcal.event_exists(ev["title"], ev["start_dt"], ev["all_day"]):
+                logger.info(f"Duplicate event skipped: {ev['title']}")
+                return "duplicate"
+            event_id = self.gcal.create_event(
+                ev["title"], ev["start_dt"], ev.get("end_dt"), ev["description"], ev["all_day"]
+            )
+            return "created" if event_id else "error"
+        except Exception as e:
+            logger.warning(f"confirm_event error: {e}")
+            return "error"
+
+    def skip_event(self, ev_id: str):
+        self.pending_events.pop(ev_id, None)
 
     # ─── Reply drafting ───────────────────────────────────────────────────────
 
@@ -138,7 +192,6 @@ class EmailManager:
     # ─── Search ──────────────────────────────────────────────────────────────
 
     def fetch_account_emails(self, account: str, max_results: int = 30) -> list[dict]:
-        """Fetch emails from a single account."""
         if account == "gmail":
             return self.gmail.list_emails(max_results=max_results)
         if account == "outlook1":

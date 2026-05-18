@@ -319,6 +319,7 @@ class MailBot:
                 lines.append(f"📅 *{events_count}* événement(s) ajouté(s) au calendrier")
             await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+            await self._send_event_confirmations(chat_id, ctx)
         except Exception as e:
             logger.error(f"cmd_sort error: {e}")
             await self._hide_loading(loading)
@@ -854,6 +855,35 @@ class MailBot:
             )
             return
 
+        # ── Calendar event confirmation ───────────────────────────────────────
+        if data.startswith("evt_add_"):
+            ev_id = data[len("evt_add_"):]
+            ev_title = self.manager.pending_events.get(ev_id, {}).get("title", "Événement")
+            await query.edit_message_text(f"📅 Ajout de *{ev_title}*…", parse_mode="Markdown")
+            status = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.manager.confirm_event(ev_id)
+            )
+            if status == "created":
+                await query.edit_message_text(
+                    f"✅ *Ajouté au calendrier*\n📅 {ev_title}", parse_mode="Markdown"
+                )
+            elif status == "duplicate":
+                await query.edit_message_text(
+                    f"⚠️ *Déjà présent dans le calendrier*\n📅 {ev_title}", parse_mode="Markdown"
+                )
+            elif status == "not_found":
+                await query.edit_message_text("⚠️ Événement introuvable (déjà traité).")
+            else:
+                await query.edit_message_text(f"❌ Erreur lors de l'ajout de *{ev_title}*.", parse_mode="Markdown")
+            return
+
+        if data.startswith("evt_skip_"):
+            ev_id = data[len("evt_skip_"):]
+            ev_title = self.manager.pending_events.get(ev_id, {}).get("title", "Événement")
+            self.manager.skip_event(ev_id)
+            await query.edit_message_text(f"❌ *Ignoré*\n📅 {ev_title}", parse_mode="Markdown")
+            return
+
         if data.startswith("reply_"):
             idx = int(data.split("_")[1])
             emails = ctx.bot_data.get(LAST_EMAILS_KEY, [])
@@ -883,6 +913,34 @@ class MailBot:
             except Exception as e:
                 await query.edit_message_text(f"❌ Erreur : {e}")
             return
+
+    # ─── Calendar event confirmation ─────────────────────────────────────────
+
+    async def _send_event_confirmations(self, chat_id: int, ctx: ContextTypes.DEFAULT_TYPE):
+        """Send one confirmation card per pending calendar event."""
+        pending = self.manager.get_pending_events()
+        for ev_id, ev in pending:
+            start_dt = ev["start_dt"]
+            fmt = "%d/%m/%Y" if ev["all_day"] else "%d/%m/%Y %H:%M"
+            date_label = start_dt.strftime(fmt) if start_dt else "Date inconnue"
+            end_dt = ev.get("end_dt")
+            end_label = f" → {end_dt.strftime(fmt)}" if end_dt else ""
+            text = (
+                f"📅 *Événement détecté*\n"
+                f"{_sep()}\n"
+                f"*{ev['title']}*\n"
+                f"🗓 {date_label}{end_label}\n"
+                f"📧 _{ev['email_subject'][:55]}_\n"
+                f"👤 {ev['email_from'][:45]}\n\n"
+                f"Ajouter au calendrier Google ?"
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Ajouter", callback_data=f"evt_add_{ev_id}"),
+                InlineKeyboardButton("❌ Ignorer", callback_data=f"evt_skip_{ev_id}"),
+            ]])
+            await ctx.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard
+            )
 
     # ─── Callback action helpers ──────────────────────────────────────────────
 
@@ -946,6 +1004,7 @@ class MailBot:
                 lines.append(f"📅 *{events_count}* événement(s) ajouté(s) au calendrier")
             await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+            await self._send_event_confirmations(chat_id, ctx)
         except Exception as e:
             logger.error(f"_cb_sort error: {e}")
             await self._hide_loading(loading)

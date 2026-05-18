@@ -54,12 +54,13 @@ async def main():
     # Wrap Telegram send for the scheduler
     allowed_id = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
-    async def send_telegram(text: str):
+    async def send_telegram(text: str, reply_markup=None):
         if allowed_id:
             await bot.app.bot.send_message(
                 chat_id=int(allowed_id),
                 text=text,
                 parse_mode="Markdown",
+                reply_markup=reply_markup,
             )
 
     scheduler = DailyScheduler(manager, send_telegram)

@@ -100,6 +100,25 @@ class GoogleCalendarClient:
             logger.error(f"Calendar create error: {e}")
             return None
 
+    def event_exists(self, title: str, start_dt: datetime, all_day: bool = False) -> bool:
+        """Return True if an event with the same title already exists on the same day."""
+        try:
+            day_start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end = day_start + timedelta(days=1)
+            result = self.service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=day_start.isoformat() + "Z",
+                timeMax=day_end.isoformat() + "Z",
+                singleEvents=True,
+            ).execute()
+            for ev in result.get("items", []):
+                if ev.get("summary", "").lower().strip() == title.lower().strip():
+                    return True
+            return False
+        except HttpError as e:
+            logger.warning(f"event_exists check failed: {e}")
+            return False
+
     def list_upcoming_events(self, max_results: int = 10) -> list[dict]:
         try:
             now = datetime.utcnow().isoformat() + "Z"
