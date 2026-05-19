@@ -19,6 +19,7 @@ class DailyScheduler:
         self.manager = manager
         self.send = send_message_fn
         self.scheduler = AsyncIOScheduler(timezone=os.getenv("TIMEZONE", "Europe/Paris"))
+        self._notified_ids: set[str] = set()  # email IDs already sent as notifications
 
     def start(self):
         time_str = os.getenv("DAILY_SUMMARY_TIME", "08:00")
@@ -59,12 +60,18 @@ class DailyScheduler:
             results = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.manager.analyze_and_sort(10)
             )
-            new_urgent = [e for e in results if e.get("importance", 0) >= 4]
+            new_urgent = [
+                e for e in results
+                if e.get("importance", 0) >= 4 and e.get("id") not in self._notified_ids
+            ]
             if new_urgent:
                 lines = ["⚡ *Nouveaux emails importants :*"]
                 for e in new_urgent[:5]:
                     lines.append(f"• [{e['account']}] {e.get('subject','')[:60]} — {e.get('from','')[:30]}")
                 await self.send("\n".join(lines))
+                for e in new_urgent:
+                    if e.get("id"):
+                        self._notified_ids.add(e["id"])
 
             # Send confirmation cards for detected calendar events
             pending = self.manager.get_pending_events()
