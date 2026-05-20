@@ -1063,8 +1063,50 @@ class MailBot:
                 context = "\n".join(lines)
 
             history = _get_history(ctx)
+
+            def tool_executor(tool_name: str, tool_input: dict) -> str:
+                indices = tool_input.get("indices", [])
+                emails_snapshot = last_emails
+
+                def _label(idx):
+                    e = emails_snapshot[idx] if 0 <= idx < len(emails_snapshot) else None
+                    return (e.get("subject", f"email #{idx}")[:50] if e else f"index {idx} invalide")
+
+                if tool_name == "delete_emails":
+                    lines = []
+                    for idx in indices:
+                        if 0 <= idx < len(emails_snapshot):
+                            ok = self.manager.delete_email(emails_snapshot[idx])
+                            lines.append(f"{'✅' if ok else '❌'} Supprimé : {_label(idx)}")
+                        else:
+                            lines.append(f"⚠️ Index {idx} invalide")
+                    return "\n".join(lines) or "Aucun email traité"
+
+                if tool_name == "mark_read_emails":
+                    lines = []
+                    for idx in indices:
+                        if 0 <= idx < len(emails_snapshot):
+                            ok = self.manager.mark_read_email(emails_snapshot[idx])
+                            lines.append(f"{'✅' if ok else '❌'} Lu : {_label(idx)}")
+                        else:
+                            lines.append(f"⚠️ Index {idx} invalide")
+                    return "\n".join(lines) or "Aucun email traité"
+
+                if tool_name == "move_emails":
+                    folder = tool_input.get("folder", "")
+                    lines = []
+                    for idx in indices:
+                        if 0 <= idx < len(emails_snapshot):
+                            ok = self.manager.move_email(emails_snapshot[idx], folder)
+                            lines.append(f"{'✅' if ok else '❌'} Déplacé → {folder} : {_label(idx)}")
+                        else:
+                            lines.append(f"⚠️ Index {idx} invalide")
+                    return "\n".join(lines) or "Aucun email traité"
+
+                return f"Outil inconnu : {tool_name}"
+
             response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.chat(text, context, history)
+                None, lambda: self.manager.chat(text, context, history, tool_executor)
             )
             # Store the exchange in memory
             _add_to_history(ctx, "user", text)

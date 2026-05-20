@@ -174,6 +174,14 @@ class GmailClient:
         ).execute()
         return new_label["id"]
 
+    def trash_email(self, msg_id: str) -> bool:
+        try:
+            self.service.users().messages().trash(userId="me", id=msg_id).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Gmail trash error: {e}")
+            return False
+
     def mark_as_read(self, msg_id: str) -> bool:
         try:
             self.service.users().messages().modify(

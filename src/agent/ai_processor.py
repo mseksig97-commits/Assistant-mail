@@ -11,6 +11,68 @@ logger = setup_logger("ai_processor")
 
 CATEGORIES = ["urgent", "important", "information", "spam", "newsletter", "social", "work", "personal", "finance", "other"]
 
+CHAT_TOOLS = [
+    {
+        "name": "delete_emails",
+        "description": (
+            "Supprime (met à la corbeille) des emails. "
+            "Utilise les indices affichés dans le contexte (colonne [N])."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Indices des emails à supprimer (0-based)",
+                }
+            },
+            "required": ["indices"],
+        },
+    },
+    {
+        "name": "mark_read_emails",
+        "description": "Marque des emails comme lus.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Indices des emails à marquer comme lus",
+                }
+            },
+            "required": ["indices"],
+        },
+    },
+    {
+        "name": "move_emails",
+        "description": "Déplace des emails vers un dossier.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Indices des emails à déplacer",
+                },
+                "folder": {
+                    "type": "string",
+                    "description": "Nom du dossier de destination (ex: Archives, Spam)",
+                },
+            },
+            "required": ["indices", "folder"],
+        },
+    },
+]
+
+_CHAT_SYSTEM = (
+    "Tu es un assistant IA de gestion des emails. Tu peux répondre aux questions "
+    "sur les emails et effectuer des actions (supprimer, déplacer, marquer comme lu) "
+    "en utilisant les outils disponibles. Les emails sont listés avec un indice [N] dans le contexte. "
+    "Réponds toujours en français, de manière concise et directe."
+)
+
 SYSTEM_PROMPT = """Tu es un assistant IA spécialisé dans la gestion des emails.
 Tu analyses les emails et fournis des réponses structurées en JSON.
 Sois concis, précis et professionnel. Réponds TOUJOURS en JSON valide sans markdown.
@@ -128,8 +190,14 @@ Emails analysés :
             logger.error(f"daily_summary error: {e}")
             return "Erreur lors de la génération du résumé."
 
-    def chat(self, user_message: str, context: str = "", history: list[dict] | None = None) -> str:
-        """General conversational response, with optional multi-turn history."""
+    def chat(
+        self,
+        user_message: str,
+        context: str = "",
+        history: list[dict] | None = None,
+        tool_executor=None,
+    ) -> str:
+        """Conversational response with optional tool use for email actions."""
         messages = list(history) if history else []
 
         content = user_message
@@ -137,19 +205,49 @@ Emails analysés :
             content = f"Contexte des emails disponibles :\n{context}\n\nMessage : {user_message}"
         messages.append({"role": "user", "content": content})
 
+        kwargs: dict = dict(
+            model=self.model,
+            max_tokens=1000,
+            system=_CHAT_SYSTEM,
+            messages=messages,
+        )
+        if tool_executor:
+            kwargs["tools"] = CHAT_TOOLS
+
         try:
-            msg = self.client.messages.create(
-                model=self.model,
-                max_tokens=1000,
-                system=(
-                    "Tu es un assistant IA de gestion des emails. Tu peux répondre aux questions "
-                    "sur les emails, aider à rédiger des messages, et effectuer des actions de gestion. "
-                    "Tu te souviens des échanges précédents dans la conversation. "
-                    "Réponds en français, de manière concise et utile."
-                ),
-                messages=messages,
+            response = self.client.messages.create(**kwargs)
+
+            # ── Tool use loop ────────────────────────────────────────────────
+            if response.stop_reason == "tool_use" and tool_executor:
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        result = tool_executor(block.name, block.input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": str(result),
+                        })
+
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": tool_results})
+
+                follow_up = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=500,
+                    system=_CHAT_SYSTEM,
+                    messages=messages,
+                    tools=CHAT_TOOLS,
+                )
+                return next(
+                    (b.text.strip() for b in follow_up.content if hasattr(b, "text")), ""
+                )
+
+            # ── Plain text response ──────────────────────────────────────────
+            return next(
+                (b.text.strip() for b in response.content if hasattr(b, "text")), ""
             )
-            return msg.content[0].text.strip()
+
         except Exception as e:
-            logger.error(f"chat error: {e}")
-            return "Désolé, une erreur s'est produite."
+            logger.error(f"chat error: {type(e).__name__}: {e}")
+            return f"❌ Erreur API : {type(e).__name__} — {e}"

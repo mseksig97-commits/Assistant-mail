@@ -154,6 +154,44 @@ class EmailManager:
     def skip_event(self, ev_id: str):
         self.pending_events.pop(ev_id, None)
 
+    # ─── Email actions ────────────────────────────────────────────────────────
+
+    def delete_email(self, email: dict) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.trash_email(msg_id)
+        if account == "outlook1":
+            return self.outlook1.trash_email(msg_id)
+        if account == "outlook2":
+            return self.outlook2.trash_email(msg_id)
+        return False
+
+    def mark_read_email(self, email: dict) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.mark_as_read(msg_id)
+        if account == "outlook1":
+            return self.outlook1.mark_read(msg_id)
+        if account == "outlook2":
+            return self.outlook2.mark_read(msg_id)
+        return False
+
+    def move_email(self, email: dict, folder: str) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.apply_label(msg_id, folder)
+        if account == "outlook1":
+            return self.outlook1.move_to_folder(msg_id, folder)
+        if account == "outlook2":
+            return self.outlook2.move_to_folder(msg_id, folder)
+        return False
+
     # ─── Reply drafting ───────────────────────────────────────────────────────
 
     def draft_reply(self, email: dict, instructions: str = "") -> str:
@@ -219,5 +257,5 @@ class EmailManager:
 
     # ─── Chat passthrough ─────────────────────────────────────────────────────
 
-    def chat(self, message: str, context: str = "", history: list[dict] | None = None) -> str:
-        return self.ai.chat(message, context, history)
+    def chat(self, message: str, context: str = "", history: list[dict] | None = None, tool_executor=None) -> str:
+        return self.ai.chat(message, context, history, tool_executor)

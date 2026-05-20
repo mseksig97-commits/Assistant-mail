@@ -196,6 +196,26 @@ class OutlookClient:
             logger.error(f"Outlook _get_or_create_folder error: {e}")
             raise
 
+    def trash_email(self, msg_id: str) -> bool:
+        return self.move_to_folder(msg_id, "Deleted Items")
+
+    def mark_read(self, msg_id: str) -> bool:
+        headers = self._headers()
+        if not headers:
+            return False
+        try:
+            r = requests.patch(
+                f"{GRAPH_BASE}/me/messages/{msg_id}",
+                headers=headers,
+                json={"isRead": True},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Outlook mark_read error: {e}")
+            return False
+
     def create_calendar_event(self, title: str, start: str, end: str, description: str = "") -> bool:
         headers = self._headers()
         if not headers:
