@@ -180,6 +180,56 @@ class EmailManager:
             return self.outlook2.mark_read(msg_id)
         return False
 
+    def mark_unread_email(self, email: dict) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.mark_as_unread(msg_id)
+        if account == "outlook1":
+            return self.outlook1.mark_unread(msg_id)
+        if account == "outlook2":
+            return self.outlook2.mark_unread(msg_id)
+        return False
+
+    def archive_email(self, email: dict) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.archive_email(msg_id)
+        if account == "outlook1":
+            return self.outlook1.archive_email(msg_id)
+        if account == "outlook2":
+            return self.outlook2.archive_email(msg_id)
+        return False
+
+    def mark_spam_email(self, email: dict) -> bool:
+        account, msg_id = email.get("account", ""), email.get("id")
+        if not msg_id:
+            return False
+        if account == "gmail":
+            return self.gmail.mark_spam(msg_id)
+        if account == "outlook1":
+            return self.outlook1.mark_spam(msg_id)
+        if account == "outlook2":
+            return self.outlook2.mark_spam(msg_id)
+        return False
+
+    def send_new_email(self, to: str, subject: str, body: str, account: str = "gmail") -> bool:
+        if account == "outlook1":
+            return self.outlook1.send_email(to, subject, body)
+        if account == "outlook2":
+            return self.outlook2.send_email(to, subject, body)
+        return self.gmail.send_email(to, subject, body)
+
+    def forward_email(self, email: dict, to: str, note: str = "") -> bool:
+        original = email.get("body", email.get("snippet", ""))[:3000]
+        subject = f"Fwd: {email.get('subject', '')}"
+        body = f"{note}\n\n" if note else ""
+        body += f"--- Message transféré ---\nDe : {email.get('from', '')}\nObjet : {email.get('subject', '')}\n\n{original}"
+        return self.send_new_email(to, subject, body, email.get("account", "gmail"))
+
     def move_email(self, email: dict, folder: str) -> bool:
         account, msg_id = email.get("account", ""), email.get("id")
         if not msg_id:
@@ -257,5 +307,5 @@ class EmailManager:
 
     # ─── Chat passthrough ─────────────────────────────────────────────────────
 
-    def chat(self, message: str, context: str = "", history: list[dict] | None = None, tool_executor=None) -> str:
-        return self.ai.chat(message, context, history, tool_executor)
+    def chat(self, message: str, context: str = "", history: list[dict] | None = None) -> dict:
+        return self.ai.chat(message, context, history)

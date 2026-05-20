@@ -1,6 +1,7 @@
 import os
 import asyncio
 import tempfile
+import uuid
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -19,6 +20,7 @@ from src.utils.unsubscribe import extract_unsubscribe, do_http_unsubscribe
 logger = setup_logger("telegram_bot")
 
 PENDING_REPLY_KEY = "pending_reply"
+PENDING_ACTIONS_KEY = "pending_actions"
 LAST_EMAILS_KEY = "last_emails"
 CURRENT_ACCOUNT_KEY = "current_account"
 NAV_MSG_KEY = "nav_msg_id"
@@ -855,6 +857,80 @@ class MailBot:
             )
             return
 
+        # ── Chat action confirmation ──────────────────────────────────────────
+        if data.startswith("act_confirm_"):
+            act_id = data[len("act_confirm_"):]
+            pending = ctx.bot_data.get(PENDING_ACTIONS_KEY, {}).pop(act_id, None)
+            if not pending:
+                await query.edit_message_text("⚠️ Action introuvable (déjà traitée).")
+                return
+            await query.edit_message_text("⏳ Exécution en cours…")
+            result = pending["result"]
+            emails = pending["emails_snapshot"]
+
+            # sort_and_label handled separately (async side effects)
+            def is_sort(r):
+                if r["type"] == "action" and r["name"] == "sort_and_label":
+                    return True
+                if r["type"] == "multi_action":
+                    return any(a["name"] == "sort_and_label" for a in r.get("actions", []))
+                return False
+
+            if is_sort(result):
+                actions = result.get("actions", [result]) if result["type"] == "multi_action" else [result]
+                sort_inp = next((a["input"] if "input" in a else a.get("input", {})
+                                 for a in actions if a.get("name") == "sort_and_label"), {})
+                n = sort_inp.get("max_emails", 30)
+                sort_results = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self.manager.analyze_and_sort(n // 3 or 10)
+                )
+                ctx.bot_data[LAST_EMAILS_KEY] = sort_results
+                await query.edit_message_text(f"✅ *{len(sort_results)} emails triés et labellisés.*", parse_mode="Markdown")
+                await self._send_event_confirmations(chat_id, ctx)
+                return
+
+            # unsubscribe handled separately (reuses existing flow)
+            if result["type"] == "action" and result["name"] == "unsubscribe_email":
+                idx = result["input"].get("email_index", -1)
+                email = emails[idx] if 0 <= idx < len(emails) else None
+                if not email:
+                    await query.edit_message_text("❌ Email introuvable.")
+                    return
+                from src.utils.unsubscribe import extract_unsubscribe, do_http_unsubscribe
+                info = extract_unsubscribe(email)
+                if not info["url"] and not info["mailto"]:
+                    await query.edit_message_text("⚠️ Aucun lien de désabonnement trouvé dans cet email.")
+                    return
+                if info.get("url"):
+                    ok = await asyncio.get_event_loop().run_in_executor(None, lambda: do_http_unsubscribe(info["url"]))
+                    await query.edit_message_text(
+                        f"{'✅ Désabonné' if ok else '❌ Échec'} de {email.get('from','?')}", parse_mode="Markdown"
+                    )
+                else:
+                    ok = self.manager.send_new_email(info["mailto"], "Unsubscribe", "")
+                    await query.edit_message_text(
+                        f"{'✅' if ok else '❌'} Email de désabonnement envoyé à {info['mailto']}"
+                    )
+                return
+
+            # General actions (sync)
+            def run_actions():
+                if result["type"] == "action":
+                    return self._execute_single_action(result["name"], result["input"], emails)
+                parts = [self._execute_single_action(a["name"], a["input"], emails)
+                         for a in result.get("actions", [])]
+                return "\n\n".join(parts)
+
+            output = await asyncio.get_event_loop().run_in_executor(None, run_actions)
+            await query.edit_message_text(f"✅ *Fait !*\n\n{output}", parse_mode="Markdown")
+            return
+
+        if data.startswith("act_cancel_"):
+            act_id = data[len("act_cancel_"):]
+            ctx.bot_data.get(PENDING_ACTIONS_KEY, {}).pop(act_id, None)
+            await query.edit_message_text("❌ *Action annulée.*", parse_mode="Markdown")
+            return
+
         # ── Calendar event confirmation ───────────────────────────────────────
         if data.startswith("evt_add_"):
             ev_id = data[len("evt_add_"):]
@@ -913,6 +989,126 @@ class MailBot:
             except Exception as e:
                 await query.edit_message_text(f"❌ Erreur : {e}")
             return
+
+    # ─── Action confirmation ──────────────────────────────────────────────────
+
+    def _action_summary(self, result: dict, emails: list[dict]) -> str:
+        """Build a human-readable summary of the action to show in the confirmation card."""
+        ICONS = {
+            "delete_emails": "🗑️", "archive_emails": "📦", "move_emails": "📁",
+            "mark_read_emails": "✉️", "mark_unread_emails": "📩", "mark_spam": "🚫",
+            "send_email": "📤", "reply_to_email": "↩️", "forward_email": "➡️",
+            "unsubscribe_email": "🔕", "sort_and_label": "🔄",
+        }
+
+        def email_lines(indices: list) -> str:
+            lines = []
+            for i in (indices or [])[:5]:
+                if 0 <= i < len(emails):
+                    e = emails[i]
+                    lines.append(f"  • `[{e.get('account','')}]` {e.get('subject','')[:50]}")
+                else:
+                    lines.append(f"  • ⚠️ index {i} invalide")
+            if len(indices) > 5:
+                lines.append(f"  • ...et {len(indices) - 5} autre(s)")
+            return "\n".join(lines)
+
+        def fmt(name, inp):
+            icon = ICONS.get(name, "⚙️")
+            idx = inp.get("indices", [])
+            if name == "delete_emails":
+                return f"{icon} *Supprimer {len(idx)} email(s)*\n{email_lines(idx)}"
+            if name == "archive_emails":
+                return f"{icon} *Archiver {len(idx)} email(s)*\n{email_lines(idx)}"
+            if name == "move_emails":
+                return f"{icon} *Déplacer vers « {inp.get('folder','?')} »*\n{email_lines(idx)}"
+            if name == "mark_read_emails":
+                return f"{icon} *Marquer comme lu(s)*\n{email_lines(idx)}"
+            if name == "mark_unread_emails":
+                return f"{icon} *Marquer comme non lu(s)*\n{email_lines(idx)}"
+            if name == "mark_spam":
+                return f"{icon} *Signaler comme spam*\n{email_lines(idx)}"
+            if name == "send_email":
+                body_preview = inp.get("body", "")[:120]
+                dots = "…" if len(inp.get("body", "")) > 120 else ""
+                return (f"{icon} *Nouvel email*\n"
+                        f"À : `{inp.get('to','?')}`\n"
+                        f"Objet : {inp.get('subject','')}\n\n"
+                        f"{body_preview}{dots}")
+            if name == "reply_to_email":
+                i = inp.get("email_index", -1)
+                ref = f"\nRéponse à : `{emails[i].get('from','?')[:45]}`" if 0 <= i < len(emails) else ""
+                body_preview = inp.get("body", "")[:120]
+                dots = "…" if len(inp.get("body", "")) > 120 else ""
+                return f"{icon} *Répondre*{ref}\n\n{body_preview}{dots}"
+            if name == "forward_email":
+                i = inp.get("email_index", -1)
+                subj = emails[i].get("subject", "")[:45] if 0 <= i < len(emails) else "?"
+                return f"{icon} *Transférer à `{inp.get('to','?')}`*\n📧 {subj}"
+            if name == "unsubscribe_email":
+                i = inp.get("email_index", -1)
+                sender = emails[i].get("from", "?")[:50] if 0 <= i < len(emails) else "?"
+                return f"{icon} *Se désabonner*\nDe : {sender}"
+            if name == "sort_and_label":
+                n = inp.get("max_emails", 30)
+                return f"{icon} *Trier et labelliser* jusqu'à {n} emails par compte"
+            return f"⚙️ *{name}*"
+
+        if result["type"] == "action":
+            return fmt(result["name"], result["input"])
+        if result["type"] == "multi_action":
+            parts = [fmt(a["name"], a["input"]) for a in result["actions"]]
+            return f"⚙️ *{len(parts)} actions :*\n\n" + "\n\n".join(parts)
+        return ""
+
+    def _execute_single_action(self, name: str, inp: dict, emails: list[dict]) -> str:
+        """Execute one action synchronously. Returns a result string."""
+        indices = inp.get("indices", [])
+
+        def lbl(i):
+            return emails[i].get("subject", f"email #{i}")[:50] if 0 <= i < len(emails) else f"index {i}"
+
+        def bulk(op, verb):
+            return "\n".join(
+                f"{'✅' if op(emails[i]) else '❌'} {verb} : {lbl(i)}"
+                for i in indices if 0 <= i < len(emails)
+            ) or "Aucun email traité"
+
+        if name == "delete_emails":
+            return bulk(self.manager.delete_email, "Supprimé")
+        if name == "archive_emails":
+            return bulk(self.manager.archive_email, "Archivé")
+        if name == "mark_read_emails":
+            return bulk(self.manager.mark_read_email, "Lu")
+        if name == "mark_unread_emails":
+            return bulk(self.manager.mark_unread_email, "Non lu")
+        if name == "mark_spam":
+            return bulk(self.manager.mark_spam_email, "Spam")
+        if name == "move_emails":
+            folder = inp.get("folder", "")
+            return "\n".join(
+                f"{'✅' if self.manager.move_email(emails[i], folder) else '❌'} → {folder} : {lbl(i)}"
+                for i in indices if 0 <= i < len(emails)
+            ) or "Aucun email traité"
+        if name == "send_email":
+            ok = self.manager.send_new_email(
+                inp.get("to", ""), inp.get("subject", ""), inp.get("body", ""),
+                inp.get("account", "gmail")
+            )
+            return f"{'✅' if ok else '❌'} Email envoyé à {inp.get('to','')}"
+        if name == "reply_to_email":
+            i = inp.get("email_index", -1)
+            if 0 <= i < len(emails):
+                ok = self.manager.send_reply(emails[i], inp.get("body", ""))
+                return f"{'✅' if ok else '❌'} Réponse envoyée à {emails[i].get('from','?')}"
+            return "❌ Email introuvable"
+        if name == "forward_email":
+            i = inp.get("email_index", -1)
+            if 0 <= i < len(emails):
+                ok = self.manager.forward_email(emails[i], inp.get("to", ""), inp.get("note", ""))
+                return f"{'✅' if ok else '❌'} Transféré à {inp.get('to','')}"
+            return "❌ Email introuvable"
+        return f"⚙️ Action non reconnue : {name}"
 
     # ─── Calendar event confirmation ─────────────────────────────────────────
 
@@ -1063,60 +1259,47 @@ class MailBot:
                 context = "\n".join(lines)
 
             history = _get_history(ctx)
-
-            def tool_executor(tool_name: str, tool_input: dict) -> str:
-                indices = tool_input.get("indices", [])
-                emails_snapshot = last_emails
-
-                def _label(idx):
-                    e = emails_snapshot[idx] if 0 <= idx < len(emails_snapshot) else None
-                    return (e.get("subject", f"email #{idx}")[:50] if e else f"index {idx} invalide")
-
-                if tool_name == "delete_emails":
-                    lines = []
-                    for idx in indices:
-                        if 0 <= idx < len(emails_snapshot):
-                            ok = self.manager.delete_email(emails_snapshot[idx])
-                            lines.append(f"{'✅' if ok else '❌'} Supprimé : {_label(idx)}")
-                        else:
-                            lines.append(f"⚠️ Index {idx} invalide")
-                    return "\n".join(lines) or "Aucun email traité"
-
-                if tool_name == "mark_read_emails":
-                    lines = []
-                    for idx in indices:
-                        if 0 <= idx < len(emails_snapshot):
-                            ok = self.manager.mark_read_email(emails_snapshot[idx])
-                            lines.append(f"{'✅' if ok else '❌'} Lu : {_label(idx)}")
-                        else:
-                            lines.append(f"⚠️ Index {idx} invalide")
-                    return "\n".join(lines) or "Aucun email traité"
-
-                if tool_name == "move_emails":
-                    folder = tool_input.get("folder", "")
-                    lines = []
-                    for idx in indices:
-                        if 0 <= idx < len(emails_snapshot):
-                            ok = self.manager.move_email(emails_snapshot[idx], folder)
-                            lines.append(f"{'✅' if ok else '❌'} Déplacé → {folder} : {_label(idx)}")
-                        else:
-                            lines.append(f"⚠️ Index {idx} invalide")
-                    return "\n".join(lines) or "Aucun email traité"
-
-                return f"Outil inconnu : {tool_name}"
-
-            response = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.manager.chat(text, context, history, tool_executor)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.manager.chat(text, context, history)
             )
-            # Store the exchange in memory
-            _add_to_history(ctx, "user", text)
-            _add_to_history(ctx, "assistant", response)
-
             await self._hide_loading(loading)
-            await ctx.bot.send_message(chat_id=chat_id, text=response)
+            loading = None
+
+            if result["type"] == "text":
+                response_text = result["text"]
+                _add_to_history(ctx, "user", text)
+                _add_to_history(ctx, "assistant", response_text)
+                await ctx.bot.send_message(chat_id=chat_id, text=response_text)
+
+            else:
+                # Build confirmation card for action / multi_action
+                act_id = uuid.uuid4().hex[:8]
+                ctx.bot_data.setdefault(PENDING_ACTIONS_KEY, {})[act_id] = {
+                    "result": result,
+                    "emails_snapshot": last_emails[:],
+                    "original_text": text,
+                }
+                summary = self._action_summary(result, last_emails)
+                preview = result.get("preview", "")
+                card = (
+                    f"🔔 *Confirmer l'action*\n{_sep()}\n"
+                    f"{summary}"
+                    + (f"\n\n_{preview}_" if preview else "")
+                )
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Confirmer", callback_data=f"act_confirm_{act_id}"),
+                    InlineKeyboardButton("❌ Annuler", callback_data=f"act_cancel_{act_id}"),
+                ]])
+                await ctx.bot.send_message(
+                    chat_id=chat_id, text=card, parse_mode="Markdown", reply_markup=keyboard
+                )
+                _add_to_history(ctx, "user", text)
+                _add_to_history(ctx, "assistant", f"[Action proposée : {result.get('name', 'multi')}]")
+
         except Exception as e:
             logger.error(f"_process_chat error: {e}")
-            await self._hide_loading(loading)
+            if loading:
+                await self._hide_loading(loading)
             await ctx.bot.send_message(chat_id=chat_id, text=f"❌ Erreur : {e}")
         finally:
             await self._restore_nav(chat_id, ctx)

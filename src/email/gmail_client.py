@@ -182,6 +182,37 @@ class GmailClient:
             logger.error(f"Gmail trash error: {e}")
             return False
 
+    def mark_as_unread(self, msg_id: str) -> bool:
+        try:
+            self.service.users().messages().modify(
+                userId="me", id=msg_id, body={"addLabelIds": ["UNREAD"]}
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Gmail mark_as_unread error: {e}")
+            return False
+
+    def archive_email(self, msg_id: str) -> bool:
+        try:
+            self.service.users().messages().modify(
+                userId="me", id=msg_id, body={"removeLabelIds": ["INBOX"]}
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Gmail archive error: {e}")
+            return False
+
+    def mark_spam(self, msg_id: str) -> bool:
+        try:
+            self.service.users().messages().modify(
+                userId="me", id=msg_id,
+                body={"addLabelIds": ["SPAM"], "removeLabelIds": ["INBOX"]}
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.error(f"Gmail mark_spam error: {e}")
+            return False
+
     def mark_as_read(self, msg_id: str) -> bool:
         try:
             self.service.users().messages().modify(

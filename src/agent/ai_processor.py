@@ -14,20 +14,37 @@ CATEGORIES = ["urgent", "important", "information", "spam", "newsletter", "socia
 CHAT_TOOLS = [
     {
         "name": "delete_emails",
-        "description": (
-            "Supprime (met à la corbeille) des emails. "
-            "Utilise les indices affichés dans le contexte (colonne [N])."
-        ),
+        "description": "Met à la corbeille un ou plusieurs emails (indices [N] du contexte).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "indices": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "Indices des emails à supprimer (0-based)",
-                }
+                "indices": {"type": "array", "items": {"type": "integer"},
+                            "description": "Indices 0-based des emails à supprimer"}
             },
             "required": ["indices"],
+        },
+    },
+    {
+        "name": "archive_emails",
+        "description": "Archive un ou plusieurs emails (retire de la boîte de réception).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {"type": "array", "items": {"type": "integer"}}
+            },
+            "required": ["indices"],
+        },
+    },
+    {
+        "name": "move_emails",
+        "description": "Déplace des emails vers un dossier spécifique.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {"type": "array", "items": {"type": "integer"}},
+                "folder": {"type": "string", "description": "Nom du dossier cible (ex: Travail, Archives)"},
+            },
+            "required": ["indices", "folder"],
         },
     },
     {
@@ -36,41 +53,119 @@ CHAT_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "indices": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "Indices des emails à marquer comme lus",
-                }
+                "indices": {"type": "array", "items": {"type": "integer"}}
             },
             "required": ["indices"],
         },
     },
     {
-        "name": "move_emails",
-        "description": "Déplace des emails vers un dossier.",
+        "name": "mark_unread_emails",
+        "description": "Marque des emails comme non lus.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "indices": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "Indices des emails à déplacer",
-                },
-                "folder": {
+                "indices": {"type": "array", "items": {"type": "integer"}}
+            },
+            "required": ["indices"],
+        },
+    },
+    {
+        "name": "mark_spam",
+        "description": "Marque des emails comme spam / indésirables.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "indices": {"type": "array", "items": {"type": "integer"}}
+            },
+            "required": ["indices"],
+        },
+    },
+    {
+        "name": "send_email",
+        "description": (
+            "Compose et envoie un nouvel email. "
+            "Rédige un sujet et un corps complets et professionnels."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Adresse email du destinataire"},
+                "subject": {"type": "string", "description": "Sujet de l'email"},
+                "body": {"type": "string", "description": "Corps complet du message"},
+                "account": {
                     "type": "string",
-                    "description": "Nom du dossier de destination (ex: Archives, Spam)",
+                    "enum": ["gmail", "outlook1", "outlook2"],
+                    "description": "Compte expéditeur (défaut: gmail)",
                 },
             },
-            "required": ["indices", "folder"],
+            "required": ["to", "subject", "body"],
+        },
+    },
+    {
+        "name": "reply_to_email",
+        "description": (
+            "Répond à un email existant. "
+            "Rédige une réponse complète et professionnelle."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email_index": {"type": "integer", "description": "Indice [N] de l'email auquel répondre"},
+                "body": {"type": "string", "description": "Corps complet de la réponse"},
+            },
+            "required": ["email_index", "body"],
+        },
+    },
+    {
+        "name": "forward_email",
+        "description": "Transfère un email à une autre adresse.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email_index": {"type": "integer", "description": "Indice [N] de l'email à transférer"},
+                "to": {"type": "string", "description": "Adresse de destination"},
+                "note": {"type": "string", "description": "Message optionnel ajouté avant l'email transféré"},
+            },
+            "required": ["email_index", "to"],
+        },
+    },
+    {
+        "name": "unsubscribe_email",
+        "description": "Se désabonne d'une newsletter ou liste de diffusion.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email_index": {"type": "integer", "description": "Indice [N] de l'email de newsletter"}
+            },
+            "required": ["email_index"],
+        },
+    },
+    {
+        "name": "sort_and_label",
+        "description": "Analyse et trie les emails : applique des catégories et labels automatiquement.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_emails": {
+                    "type": "integer",
+                    "description": "Nombre max d'emails à traiter par compte (défaut: 30)",
+                }
+            },
+            "required": [],
         },
     },
 ]
 
 _CHAT_SYSTEM = (
     "Tu es un assistant IA de gestion des emails. Tu peux répondre aux questions "
-    "sur les emails et effectuer des actions (supprimer, déplacer, marquer comme lu) "
-    "en utilisant les outils disponibles. Les emails sont listés avec un indice [N] dans le contexte. "
-    "Réponds toujours en français, de manière concise et directe."
+    "sur les emails et effectuer toutes les actions de gestion en utilisant les outils disponibles.\n"
+    "Les emails sont listés avec un indice [N] dans le contexte.\n\n"
+    "Règles :\n"
+    "- Identifie toujours les bons indices d'emails avant d'appeler un outil\n"
+    "- Pour send_email et reply_to_email, rédige un message complet et professionnel\n"
+    "- Utilise les outils plutôt que de décrire l'action\n"
+    "- Si plusieurs actions sont demandées, appelle plusieurs outils\n"
+    "Réponds en français, de manière concise."
 )
 
 SYSTEM_PROMPT = """Tu es un assistant IA spécialisé dans la gestion des emails.
@@ -195,59 +290,49 @@ Emails analysés :
         user_message: str,
         context: str = "",
         history: list[dict] | None = None,
-        tool_executor=None,
-    ) -> str:
-        """Conversational response with optional tool use for email actions."""
+    ) -> dict:
+        """
+        Returns a dict:
+          {"type": "text",         "text": "..."}
+          {"type": "action",       "name": "...", "input": {...}, "preview": "..."}
+          {"type": "multi_action", "actions": [...], "preview": "..."}
+        """
         messages = list(history) if history else []
-
-        content = user_message
-        if context:
-            content = f"Contexte des emails disponibles :\n{context}\n\nMessage : {user_message}"
+        content = (
+            f"Contexte des emails disponibles :\n{context}\n\nMessage : {user_message}"
+            if context else user_message
+        )
         messages.append({"role": "user", "content": content})
 
-        kwargs: dict = dict(
-            model=self.model,
-            max_tokens=1000,
-            system=_CHAT_SYSTEM,
-            messages=messages,
-        )
-        if tool_executor:
-            kwargs["tools"] = CHAT_TOOLS
-
         try:
-            response = self.client.messages.create(**kwargs)
-
-            # ── Tool use loop ────────────────────────────────────────────────
-            if response.stop_reason == "tool_use" and tool_executor:
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        result = tool_executor(block.name, block.input)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": str(result),
-                        })
-
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": tool_results})
-
-                follow_up = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=500,
-                    system=_CHAT_SYSTEM,
-                    messages=messages,
-                    tools=CHAT_TOOLS,
-                )
-                return next(
-                    (b.text.strip() for b in follow_up.content if hasattr(b, "text")), ""
-                )
-
-            # ── Plain text response ──────────────────────────────────────────
-            return next(
-                (b.text.strip() for b in response.content if hasattr(b, "text")), ""
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1500,
+                system=_CHAT_SYSTEM,
+                messages=messages,
+                tools=CHAT_TOOLS,
             )
+
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+            text = " ".join(b.text for b in response.content if hasattr(b, "text")).strip()
+
+            if not tool_blocks:
+                return {"type": "text", "text": text}
+
+            if len(tool_blocks) == 1:
+                return {
+                    "type": "action",
+                    "name": tool_blocks[0].name,
+                    "input": tool_blocks[0].input,
+                    "preview": text,
+                }
+
+            return {
+                "type": "multi_action",
+                "actions": [{"name": b.name, "input": b.input} for b in tool_blocks],
+                "preview": text,
+            }
 
         except Exception as e:
             logger.error(f"chat error: {type(e).__name__}: {e}")
-            return f"❌ Erreur API : {type(e).__name__} — {e}"
+            return {"type": "text", "text": f"❌ Erreur API : {type(e).__name__} — {e}"}

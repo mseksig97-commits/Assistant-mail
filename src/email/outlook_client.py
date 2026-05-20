@@ -199,7 +199,19 @@ class OutlookClient:
     def trash_email(self, msg_id: str) -> bool:
         return self.move_to_folder(msg_id, "Deleted Items")
 
+    def archive_email(self, msg_id: str) -> bool:
+        return self.move_to_folder(msg_id, "Archive")
+
+    def mark_spam(self, msg_id: str) -> bool:
+        return self.move_to_folder(msg_id, "Junk Email")
+
     def mark_read(self, msg_id: str) -> bool:
+        return self._set_read(msg_id, True)
+
+    def mark_unread(self, msg_id: str) -> bool:
+        return self._set_read(msg_id, False)
+
+    def _set_read(self, msg_id: str, is_read: bool) -> bool:
         headers = self._headers()
         if not headers:
             return False
@@ -207,13 +219,13 @@ class OutlookClient:
             r = requests.patch(
                 f"{GRAPH_BASE}/me/messages/{msg_id}",
                 headers=headers,
-                json={"isRead": True},
+                json={"isRead": is_read},
                 timeout=30,
             )
             r.raise_for_status()
             return True
         except Exception as e:
-            logger.error(f"Outlook mark_read error: {e}")
+            logger.error(f"Outlook set_read error: {e}")
             return False
 
     def create_calendar_event(self, title: str, start: str, end: str, description: str = "") -> bool:
